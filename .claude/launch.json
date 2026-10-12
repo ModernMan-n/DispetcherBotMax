@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "dashboard-demo",
+      "runtimeExecutable": ".venv/bin/python",
+      "runtimeArgs": ["-m", "app.dashboard", "--db", "data/demo.db", "--port", "8000"],
+      "port": 8000
+    }
+  ]
+}

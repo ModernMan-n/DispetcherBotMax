@@ -1,0 +1,29 @@
+[project]
+name = "college-dispatch-bot"
+version = "0.1.0"
+description = "MAX-бот приёма заявок в диспетчерскую"
+requires-python = ">=3.11"
+dependencies = [
+    "maxapi==1.2.3",
+    "sqlalchemy[asyncio]>=2.0",
+    "aiosqlite>=0.20",
+    "pyyaml>=6.0",
+    "python-dotenv>=1.0",
+    "fastapi>=0.143.0",
+    "uvicorn>=0.54.0",
+]
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.uv]
+package = false
