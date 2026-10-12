@@ -1,4 +1,8 @@
-"""Чат диспетчерской: карточки заявок с кнопками и уведомления заявителю."""
+"""Карточки заявок: чат диспетчерской и личка специалистов, кнопки и уведомления заявителю.
+
+Карточка одной заявки может лежать в нескольких местах (групповой чат, личка каждого
+специалиста направления). Все копии запоминаются в card_messages и обновляются вместе.
+"""
 
 from __future__ import annotations
 
@@ -8,6 +12,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from maxapi import Bot, F, Router
+from maxapi.enums.chat_type import ChatType
 from maxapi.enums.intent import Intent
 from maxapi.filters.callback_payload import CallbackPayload
 from maxapi.filters.filter import BaseFilter
@@ -15,7 +20,7 @@ from maxapi.types import BotAdded, MessageCallback
 from maxapi.types.attachments.buttons.callback_button import CallbackButton
 from maxapi.utils.inline_keyboard import InlineKeyboardBuilder
 
-from app import repo
+from app import repo, staff
 from app.config import OrgConfig
 from app.db import Database
 from app.formatting import format_duration
@@ -38,7 +43,7 @@ NOTIFY_TEXT_KEY = {
 
 
 class Card(CallbackPayload, prefix="r"):
-    act: str  # take | done | release | cancel | cancel_ok | cat | back
+    act: str  # open | take | done | release | cancel | cancel_ok | cat | back
     id: int
 
 
@@ -47,19 +52,22 @@ class CardCategory(CallbackPayload, prefix="rc"):
     code: str
 
 
-class FromChat(BaseFilter):
-    """Нажатия принимаются только из чата диспетчерской."""
+class CardAccess(BaseFilter):
+    """Кнопки карточек работают в чате диспетчерской и в личке у специалистов."""
 
-    def __init__(self, chat_id: int | None) -> None:
-        self.chat_id = chat_id
+    def __init__(self, org: OrgConfig, db: Database) -> None:
+        self.org, self.db = org, db
 
     async def __call__(self, event) -> bool:
         message = getattr(event, "message", None)
-        return (
-            self.chat_id is not None
-            and message is not None
-            and message.recipient.chat_id == self.chat_id
-        )
+        if message is None:
+            return False
+        if self.org.dispatcher_chat_id is not None and message.recipient.chat_id == self.org.dispatcher_chat_id:
+            return True
+        if message.recipient.chat_type != ChatType.DIALOG:
+            return False
+        async with self.db.session() as s:
+            return await staff.get_specialist(s, self.org.org_id, event.callback.user.user_id) is not None
 
 
 def render_card(org: OrgConfig, req: Request) -> str:
@@ -125,17 +133,53 @@ def category_keyboard(org: OrgConfig, req: Request) -> list:
     return [kb.as_markup()]
 
 
-async def post_new_request(bot: Bot, org: OrgConfig, req: Request) -> None:
-    """Отправляет карточку новой заявки в чат диспетчерской. Ошибки не мешают заявителю."""
-    if org.dispatcher_chat_id is None:
-        log.warning("dispatcher_chat_id не задан — заявка №%s не отправлена в диспетчерскую", req.id)
-        return
+# --- рассылка и синхронизация карточек ---
+
+
+async def _send_card(bot: Bot, db: Database, org: OrgConfig, req: Request, *, chat_id=None, user_id=None) -> None:
     try:
-        await bot.send_message(
-            chat_id=org.dispatcher_chat_id, text=render_card(org, req), attachments=card_keyboard(req)
+        sent = await bot.send_message(
+            chat_id=chat_id, user_id=user_id, text=render_card(org, req), attachments=card_keyboard(req)
         )
     except Exception:
-        log.exception("Не удалось отправить заявку №%s в чат диспетчерской", req.id)
+        log.exception("Не удалось отправить карточку №%s (chat=%s, user=%s)", req.id, chat_id, user_id)
+        return
+    mid = sent.message.body.mid if sent and sent.message and sent.message.body else None
+    if mid:
+        async with db.session() as s, s.begin():
+            await staff.save_card(s, req.id, mid, chat_id=chat_id, user_id=user_id)
+
+
+async def send_to_specialists(bot: Bot, db: Database, org: OrgConfig, req: Request) -> None:
+    """Карточка — специалистам направления на линии, у которых её ещё нет."""
+    async with db.session() as s:
+        recipients = await staff.on_duty_for_category(s, org.org_id, req.category)
+        already = {c.user_id for c in await staff.card_messages(s, req.id) if c.user_id}
+    for a in recipients:
+        if a.max_id not in already:
+            await _send_card(bot, db, org, req, user_id=a.max_id)
+
+
+async def post_new_request(bot: Bot, db: Database, org: OrgConfig, req: Request) -> None:
+    """Новая заявка: в чат диспетчерской и специалистам направления. Ошибки не мешают заявителю."""
+    if org.dispatcher_chat_id is not None:
+        await _send_card(bot, db, org, req, chat_id=org.dispatcher_chat_id)
+    await send_to_specialists(bot, db, org, req)
+
+
+async def sync_cards(bot: Bot, db: Database, org: OrgConfig, req: Request, *, skip_mid: str | None) -> None:
+    """Обновляет все копии карточки, кроме той, на которой нажали (её правит сам callback)."""
+    async with db.session() as s:
+        cards = await staff.card_messages(s, req.id)
+    text, attachments = render_card(org, req), card_keyboard(req)
+    for c in cards:
+        if c.message_id == skip_mid:
+            continue
+        try:
+            await bot.edit_message(message_id=c.message_id, text=text, attachments=attachments)
+        except Exception:
+            # Старые сообщения MAX может не дать отредактировать — не страшно.
+            log.warning("Не удалось обновить карточку №%s (%s)", req.id, c.message_id, exc_info=True)
 
 
 async def notify_applicant(bot: Bot, org: OrgConfig, req: Request) -> None:
@@ -148,9 +192,14 @@ async def notify_applicant(bot: Bot, org: OrgConfig, req: Request) -> None:
         log.exception("Не удалось уведомить заявителя по заявке №%s", req.id)
 
 
+def _pressed_mid(event: MessageCallback) -> str | None:
+    body = event.message.body if event.message else None
+    return body.mid if body else None
+
+
 def build_dispatch_router(org: OrgConfig, db: Database) -> Router:
     router = Router(router_id="dispatch")
-    in_chat = FromChat(org.dispatcher_chat_id)
+    access = CardAccess(org, db)
     # Один процесс бота (см. lock в __main__), поэтому обычной блокировки достаточно,
     # чтобы двое не взяли одну заявку одновременно.
     status_lock = asyncio.Lock()
@@ -183,26 +232,30 @@ def build_dispatch_router(org: OrgConfig, db: Database) -> Router:
                 return
             assignee_id = None
             if status == Status.IN_PROGRESS:
-                assignee_id = (await repo.get_or_create_assignee(s, org.org_id, user.user_id, name)).id
+                # Специалист берёт заявку под своей карточкой, остальные — заводятся по имени из MAX.
+                specialist = await staff.get_specialist(s, org.org_id, user.user_id)
+                assignee = specialist or await repo.get_or_create_assignee(s, org.org_id, user.user_id, name)
+                assignee_id = assignee.id
             await repo.set_status(s, req, status, changed_by=user.user_id, assignee_id=assignee_id)
             await s.refresh(req, ["assignee"])
         log.info("Заявка №%s → %s (%s)", req.id, status, user.user_id)
         await event.edit(text=render_card(org, req), attachments=card_keyboard(req))
+        await sync_cards(event.bot, db, org, req, skip_mid=_pressed_mid(event))
         await notify_applicant(event.bot, org, req)
 
-    @router.message_callback(Card.filter(F.act == "take"), in_chat)
+    @router.message_callback(Card.filter(F.act == "take"), access)
     async def on_take(event: MessageCallback, payload: Card):
         await change_status(event, payload.id, Status.IN_PROGRESS)
 
-    @router.message_callback(Card.filter(F.act == "done"), in_chat)
+    @router.message_callback(Card.filter(F.act == "done"), access)
     async def on_done(event: MessageCallback, payload: Card):
         await change_status(event, payload.id, Status.DONE)
 
-    @router.message_callback(Card.filter(F.act == "release"), in_chat)
+    @router.message_callback(Card.filter(F.act == "release"), access)
     async def on_release(event: MessageCallback, payload: Card):
         await change_status(event, payload.id, Status.NEW)
 
-    @router.message_callback(Card.filter(F.act == "cancel_ok"), in_chat)
+    @router.message_callback(Card.filter(F.act == "cancel_ok"), access)
     async def on_cancel_ok(event: MessageCallback, payload: Card):
         await change_status(event, payload.id, Status.CANCELLED)
 
@@ -215,19 +268,30 @@ def build_dispatch_router(org: OrgConfig, db: Database) -> Router:
         attachments = keyboard(req) if Status(req.status) in ACTIVE_STATUSES else []
         await event.edit(text=render_card(org, req), attachments=attachments)
 
-    @router.message_callback(Card.filter(F.act == "cancel"), in_chat)
+    @router.message_callback(Card.filter(F.act == "open"), access)
+    async def on_open(event: MessageCallback, payload: Card):
+        """Специалист открыл заявку из списка — присылаем карточку отдельным сообщением."""
+        async with db.session() as s:
+            req = await repo.get_request(s, org.org_id, payload.id)
+        if req is None:
+            await event.ack(notification="Заявка не найдена")
+            return
+        await event.ack(notification=f"Заявка №{req.id}")
+        await _send_card(event.bot, db, org, req, user_id=event.callback.user.user_id)
+
+    @router.message_callback(Card.filter(F.act == "cancel"), access)
     async def on_cancel(event: MessageCallback, payload: Card):
         await show(event, payload.id, cancel_confirm_keyboard)
 
-    @router.message_callback(Card.filter(F.act == "cat"), in_chat)
+    @router.message_callback(Card.filter(F.act == "cat"), access)
     async def on_category_menu(event: MessageCallback, payload: Card):
         await show(event, payload.id, lambda req: category_keyboard(org, req))
 
-    @router.message_callback(Card.filter(F.act == "back"), in_chat)
+    @router.message_callback(Card.filter(F.act == "back"), access)
     async def on_back(event: MessageCallback, payload: Card):
         await show(event, payload.id, card_keyboard)
 
-    @router.message_callback(CardCategory.filter(), in_chat)
+    @router.message_callback(CardCategory.filter(), access)
     async def on_category_set(event: MessageCallback, payload: CardCategory):
         if payload.code not in org.category_titles:
             await event.ack(notification="Нет такой категории")
@@ -237,7 +301,12 @@ def build_dispatch_router(org: OrgConfig, db: Database) -> Router:
             if req is None:
                 await event.ack(notification="Заявка не найдена")
                 return
+            changed = req.category != payload.code
             await repo.set_category(s, req, payload.code)
         await event.edit(text=render_card(org, req), attachments=card_keyboard(req))
+        await sync_cards(event.bot, db, org, req, skip_mid=_pressed_mid(event))
+        if changed and Status(req.status) == Status.NEW:
+            # Заявка сменила направление — показываем её специалистам нового направления.
+            await send_to_specialists(event.bot, db, org, req)
 
     return router

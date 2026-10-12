@@ -6,9 +6,12 @@ from maxapi.context import State, StatesGroup
 from maxapi.enums.intent import Intent
 from maxapi.filters.callback_payload import CallbackPayload
 from maxapi.types.attachments.buttons.callback_button import CallbackButton
+from maxapi.types.attachments.buttons.request_contact import RequestContactButton
 from maxapi.utils.inline_keyboard import InlineKeyboardBuilder
 
+from app.bot.dispatch import Card
 from app.config import OrgConfig
+from app.models import Assignee
 
 
 class NewRequest(StatesGroup):
@@ -26,10 +29,43 @@ class BuildingChoice(CallbackPayload, prefix="b"):
     code: str
 
 
-def main_menu():
+class StaffAction(CallbackPayload, prefix="s"):
+    name: str  # mine | all | duty_on | duty_off
+
+
+def main_menu(specialist: Assignee | None = None):
     kb = InlineKeyboardBuilder()
-    kb.row(CallbackButton(text="Новая заявка", payload=Action(name="new").pack(), intent=Intent.POSITIVE))
-    kb.row(CallbackButton(text="Мои заявки", payload=Action(name="my").pack()))
+    if specialist is not None:
+        kb.row(CallbackButton(text="Заявки моих направлений", payload=StaffAction(name="mine").pack()))
+        kb.row(CallbackButton(text="Все активные заявки", payload=StaffAction(name="all").pack()))
+        if specialist.on_duty:
+            kb.row(CallbackButton(text="Уйти с линии", payload=StaffAction(name="duty_off").pack()))
+        else:
+            kb.row(CallbackButton(
+                text="Выйти на линию", payload=StaffAction(name="duty_on").pack(), intent=Intent.POSITIVE
+            ))
+        kb.row(
+            CallbackButton(text="Новая заявка", payload=Action(name="new").pack()),
+            CallbackButton(text="Мои заявки", payload=Action(name="my").pack()),
+        )
+    else:
+        kb.row(CallbackButton(text="Новая заявка", payload=Action(name="new").pack(), intent=Intent.POSITIVE))
+        kb.row(CallbackButton(text="Мои заявки", payload=Action(name="my").pack()))
+    return kb.as_markup()
+
+
+def share_contact_keyboard():
+    kb = InlineKeyboardBuilder()
+    kb.row(RequestContactButton(text="Поделиться номером"))
+    kb.row(cancel_button())
+    return kb.as_markup()
+
+
+def request_list_keyboard(request_ids: list[int]):
+    kb = InlineKeyboardBuilder()
+    for rid in request_ids:
+        kb.add(CallbackButton(text=f"№{rid}", payload=Card(act="open", id=rid).pack()))
+    kb.adjust(4)
     return kb.as_markup()
 
 

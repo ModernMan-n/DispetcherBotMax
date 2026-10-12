@@ -13,7 +13,7 @@ from maxapi.filters.state import StateFilter
 from maxapi.types import BotStarted, MessageCallback, MessageCreated
 from maxapi.types.users import User
 
-from app import repo
+from app import repo, staff
 from app.bot import ui
 from app.bot.dispatch import post_new_request
 from app.bot.ui import Action, BuildingChoice, NewRequest
@@ -61,6 +61,12 @@ def build_router(org: OrgConfig, db: Database, categorizer: Categorizer) -> Rout
     router = Router(router_id="applicant")
     router.filter(InDialog())
 
+    async def menu(user_id: int):
+        """Главное меню: у специалиста — со своими кнопками."""
+        async with db.session() as s:
+            specialist = await staff.get_specialist(s, org.org_id, user_id)
+        return ui.main_menu(specialist)
+
     def welcome_text() -> str:
         return f"{org.text('welcome')}\n\n{org.text('privacy')}"
 
@@ -86,13 +92,13 @@ def build_router(org: OrgConfig, db: Database, categorizer: Categorizer) -> Rout
     async def on_bot_started(event: BotStarted, context: BaseContext):
         await context.clear()
         await event.bot.send_message(
-            chat_id=event.chat_id, text=welcome_text(), attachments=[ui.main_menu()]
+            chat_id=event.chat_id, text=welcome_text(), attachments=[await menu(event.user.user_id)]
         )
 
     @router.message_created(CommandStart())
     async def on_start(event: MessageCreated, context: BaseContext):
         await context.clear()
-        await event.message.answer(text=welcome_text(), attachments=[ui.main_menu()])
+        await event.message.answer(text=welcome_text(), attachments=[await menu(event.message.sender.user_id)])
 
     @router.message_created(Command(["new", "zayavka"]))
     async def on_new_command(event: MessageCreated, context: BaseContext):
@@ -101,12 +107,12 @@ def build_router(org: OrgConfig, db: Database, categorizer: Categorizer) -> Rout
     @router.message_created(Command(["cancel", "otmena"]))
     async def on_cancel_command(event: MessageCreated, context: BaseContext):
         await context.clear()
-        await event.message.answer(text=org.text("cancelled"), attachments=[ui.main_menu()])
+        await event.message.answer(text=org.text("cancelled"), attachments=[await menu(event.message.sender.user_id)])
 
     @router.message_created(Command(["my"]))
     async def on_my_command(event: MessageCreated):
         await event.message.answer(
-            text=await my_requests_text(event.message.sender.user_id), attachments=[ui.main_menu()]
+            text=await my_requests_text(event.message.sender.user_id), attachments=[await menu(event.message.sender.user_id)]
         )
 
     # --- Кнопки меню ---
@@ -120,14 +126,14 @@ def build_router(org: OrgConfig, db: Database, categorizer: Categorizer) -> Rout
     async def on_my_button(event: MessageCallback):
         await close_buttons(event)
         await event.send(
-            text=await my_requests_text(event.callback.user.user_id), attachments=[ui.main_menu()]
+            text=await my_requests_text(event.callback.user.user_id), attachments=[await menu(event.callback.user.user_id)]
         )
 
     @router.message_callback(Action.filter(F.name == "cancel"))
     async def on_cancel_button(event: MessageCallback, context: BaseContext):
         await context.clear()
         await event.edit(text=org.text("cancelled"), attachments=[])
-        await event.send(text=org.text("idle"), attachments=[ui.main_menu()])
+        await event.send(text=org.text("idle"), attachments=[await menu(event.callback.user.user_id)])
 
     # --- Шаги сценария ---
 
@@ -194,8 +200,8 @@ def build_router(org: OrgConfig, db: Database, categorizer: Categorizer) -> Rout
             )
         log.info("Создана заявка №%s (%s)", req.id, req.category)
         await close_buttons(event)
-        await event.send(text=org.text("created", id=req.id), attachments=[ui.main_menu()])
-        await post_new_request(event.bot, org, req)
+        await event.send(text=org.text("created", id=req.id), attachments=[await menu(event.callback.user.user_id)])
+        await post_new_request(event.bot, db, org, req)
 
     # --- Всё остальное ---
 
@@ -220,6 +226,6 @@ def build_router(org: OrgConfig, db: Database, categorizer: Categorizer) -> Rout
 
     @router.message_created(StateFilter(None))
     async def on_idle(event: MessageCreated):
-        await event.message.answer(text=org.text("idle"), attachments=[ui.main_menu()])
+        await event.message.answer(text=org.text("idle"), attachments=[await menu(event.message.sender.user_id)])
 
     return router
