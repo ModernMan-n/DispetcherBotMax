@@ -483,6 +483,11 @@ async function start() {
   route();
 }
 
+$("theme-toggle").addEventListener("click", () => {
+  const dark = document.documentElement.dataset.theme !== "dark";
+  if (dark) document.documentElement.dataset.theme = "dark"; else delete document.documentElement.dataset.theme;
+  try { localStorage.setItem("theme", dark ? "dark" : "light"); } catch (_) {}
+});
 $("period").addEventListener("change", loadOverview);
 $("req-tabs").addEventListener("click", e => {
   const scope = e.target.closest("button")?.dataset.scope;

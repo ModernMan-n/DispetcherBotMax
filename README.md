@@ -75,7 +75,8 @@ uv run python -m scripts.seed_demo   # data/demo.db: ~300 вымышленных
 | `app/stats.py` | расчёт метрик для дашборда |
 | `app/auth.py` | вход по коду из MAX, сессии, права ролей |
 | `app/actions.py` | действия с заявками из веба с обновлением карточек в MAX |
-| `app/dashboard/` | веб-интерфейс: FastAPI (`web.py`), страницы входа и приложения, `app.js`, `app.css` |
+| `app/dashboard/` | веб-интерфейс: FastAPI (`web.py`), страницы входа и приложения, `app.js`, `app.css`, логотип |
+| `migrations/` | миграции Alembic |
 | `scripts/seed_demo.py` | генератор демо-БД |
 | `scripts/staff.py` | управление специалистами из командной строки |
 
@@ -87,6 +88,18 @@ uv run python -m scripts.seed_demo   # data/demo.db: ~300 вымышленных
 - `/cancel` — отменить заполнение
 - `/staff` — вход для специалистов и их меню
 
+## Миграции базы (Alembic)
+
+Схема создаётся и обновляется миграциями из `migrations/`: бот и дашборд сами выполняют `upgrade head` при запуске.
+
+```bash
+uv run alembic revision --autogenerate -m "что изменилось"   # после правки app/models.py
+uv run alembic upgrade head                                    # вручную, если нужно
+uv run alembic current                                         # текущая версия базы
+```
+
+Тест `tests/test_migrations.py` падает, если модели поменяли, а миграцию не создали. База, созданная до Alembic, не запустится сама: если её схема актуальна, отметьте это командой `uv run alembic stamp head`.
+
 ## Переход на PostgreSQL
 
-Достаточно поменять `DATABASE_URL` на `postgresql+asyncpg://…` и установить `asyncpg`. Перед этим нужно заменить `create_all` на миграции Alembic.
+Поменять `DATABASE_URL` на `postgresql+asyncpg://…`, установить `asyncpg` и выполнить `uv run alembic upgrade head`.
