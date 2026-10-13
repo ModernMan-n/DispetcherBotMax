@@ -20,6 +20,7 @@ from app.bot.ui import Action, BuildingChoice, NewRequest
 from app.categorizer import Categorizer
 from app.config import OrgConfig
 from app.db import Database
+from app.membership import MembershipChecker
 from app.models import Status
 
 log = logging.getLogger(__name__)
@@ -57,7 +58,9 @@ async def close_buttons(event: MessageCallback) -> None:
         await event.ack(notification="Принято")
 
 
-def build_router(org: OrgConfig, db: Database, categorizer: Categorizer) -> Router:
+def build_router(
+    org: OrgConfig, db: Database, categorizer: Categorizer, members: MembershipChecker
+) -> Router:
     router = Router(router_id="applicant")
     router.filter(InDialog())
 
@@ -201,7 +204,7 @@ def build_router(org: OrgConfig, db: Database, categorizer: Categorizer) -> Rout
         log.info("Создана заявка №%s (%s)", req.id, req.category)
         await close_buttons(event)
         await event.send(text=org.text("created", id=req.id), attachments=[await menu(event.callback.user.user_id)])
-        await post_new_request(event.bot, db, org, req)
+        await post_new_request(event.bot, db, org, req, members)
 
     # --- Всё остальное ---
 

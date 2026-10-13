@@ -24,6 +24,7 @@ from app import repo, staff
 from app.config import OrgConfig
 from app.db import Database
 from app.formatting import format_duration
+from app.membership import MembershipChecker
 from app.models import ACTIVE_STATUSES, TRANSITIONS, Request, Status
 
 log = logging.getLogger(__name__)
@@ -150,21 +151,29 @@ async def _send_card(bot: Bot, db: Database, org: OrgConfig, req: Request, *, ch
             await staff.save_card(s, req.id, mid, chat_id=chat_id, user_id=user_id)
 
 
-async def send_to_specialists(bot: Bot, db: Database, org: OrgConfig, req: Request) -> None:
-    """Карточка — специалистам направления на линии, у которых её ещё нет."""
+async def send_to_specialists(
+    bot: Bot, db: Database, org: OrgConfig, req: Request, members: MembershipChecker
+) -> None:
+    """Карточка — специалистам направления на линии, у которых её ещё нет и кто ещё в сотрудниках."""
     async with db.session() as s:
         recipients = await staff.on_duty_for_category(s, org.org_id, req.category)
         already = {c.user_id for c in await staff.card_messages(s, req.id) if c.user_id}
     for a in recipients:
-        if a.max_id not in already:
-            await _send_card(bot, db, org, req, user_id=a.max_id)
+        if a.max_id in already:
+            continue
+        if not await members.is_member(bot, a.max_id):
+            log.info("Специалист %s не в чате сотрудников — карточку №%s не отправляем", a.id, req.id)
+            continue
+        await _send_card(bot, db, org, req, user_id=a.max_id)
 
 
-async def post_new_request(bot: Bot, db: Database, org: OrgConfig, req: Request) -> None:
+async def post_new_request(
+    bot: Bot, db: Database, org: OrgConfig, req: Request, members: MembershipChecker
+) -> None:
     """Новая заявка: в чат диспетчерской и специалистам направления. Ошибки не мешают заявителю."""
     if org.dispatcher_chat_id is not None:
         await _send_card(bot, db, org, req, chat_id=org.dispatcher_chat_id)
-    await send_to_specialists(bot, db, org, req)
+    await send_to_specialists(bot, db, org, req, members)
 
 
 async def sync_cards(bot: Bot, db: Database, org: OrgConfig, req: Request, *, skip_mid: str | None) -> None:
@@ -197,7 +206,7 @@ def _pressed_mid(event: MessageCallback) -> str | None:
     return body.mid if body else None
 
 
-def build_dispatch_router(org: OrgConfig, db: Database) -> Router:
+def build_dispatch_router(org: OrgConfig, db: Database, members: MembershipChecker) -> Router:
     router = Router(router_id="dispatch")
     access = CardAccess(org, db)
     # Один процесс бота (см. lock в __main__), поэтому обычной блокировки достаточно,
@@ -206,17 +215,25 @@ def build_dispatch_router(org: OrgConfig, db: Database) -> Router:
 
     @router.bot_added()
     async def on_bot_added(event: BotAdded):
-        if event.chat_id == org.dispatcher_chat_id:
-            text = "Чат диспетчерской подключён. Новые заявки будут приходить сюда."
-        else:
-            text = (
-                f"ID этого чата: {event.chat_id}\n"
-                f"Чтобы сюда приходили заявки, укажите в .env:\n"
-                f"DISPATCHER_CHAT_ID={event.chat_id}\n"
-                f"и перезапустите бота."
-            )
         log.info("Бота добавили в чат %s", event.chat_id)
-        await event.bot.send_message(chat_id=event.chat_id, text=text)
+        if event.chat_id == org.dispatcher_chat_id:
+            await event.bot.send_message(
+                chat_id=event.chat_id, text="Чат диспетчерской подключён. Новые заявки будут приходить сюда."
+            )
+            return
+        if event.chat_id == members.chat_id:
+            return  # чат «Сотрудники»: молчим, там все сотрудники колледжа
+        # Незнакомый чат: ID не пишем в сам чат (он может быть большим), а присылаем тому, кто добавил.
+        text = (
+            f"Меня добавили в чат, ID: {event.chat_id}\n"
+            f"Если это чат диспетчерской — укажите в .env DISPATCHER_CHAT_ID={event.chat_id}\n"
+            f"Если это чат «Сотрудники» — STAFF_CHAT_ID={event.chat_id}\n"
+            f"Затем перезапустите бота."
+        )
+        try:
+            await event.bot.send_message(user_id=event.user.user_id, text=text)
+        except Exception:
+            log.warning("Не удалось написать в личку тому, кто добавил бота; ID чата есть в этом логе")
 
     async def change_status(event: MessageCallback, req_id: int, status: Status) -> None:
         user = event.callback.user
@@ -307,6 +324,6 @@ def build_dispatch_router(org: OrgConfig, db: Database) -> Router:
         await sync_cards(event.bot, db, org, req, skip_mid=_pressed_mid(event))
         if changed and Status(req.status) == Status.NEW:
             # Заявка сменила направление — показываем её специалистам нового направления.
-            await send_to_specialists(event.bot, db, org, req)
+            await send_to_specialists(event.bot, db, org, req, members)
 
     return router

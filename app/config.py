@@ -31,6 +31,8 @@ class OrgConfig(BaseModel):
     name: str
     # Групповой чат диспетчерской в MAX. ID чата бот пишет туда сам при добавлении.
     dispatcher_chat_id: int | None = None
+    # Чат «Сотрудники»: пользоваться ботом могут только его участники. None — проверка выключена.
+    staff_chat_id: int | None = None
     timezone: str = "Europe/Moscow"
     buildings: list[Building]
     categories: list[Category]
@@ -84,6 +86,8 @@ def load_settings() -> Settings:
     org = load_org_config(os.getenv("ORG_CONFIG", "config/org.yaml"))
     if chat_id := os.getenv("DISPATCHER_CHAT_ID"):
         org = org.model_copy(update={"dispatcher_chat_id": int(chat_id)})
+    if chat_id := os.getenv("STAFF_CHAT_ID"):
+        org = org.model_copy(update={"staff_chat_id": int(chat_id)})
     return Settings(
         bot_token=os.getenv("MAX_BOT_TOKEN") or None,
         database_url=os.getenv("DATABASE_URL", f"sqlite+aiosqlite:///{ROOT / 'data' / 'bot.db'}"),

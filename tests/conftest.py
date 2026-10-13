@@ -25,8 +25,14 @@ async def db(org):
 
 
 @pytest.fixture
-async def h(db, org, monkeypatch, caplog):
-    org = org.model_copy(update={"dispatcher_chat_id": DISPATCH_CHAT_ID})
+def staff_chat():
+    """ID чата «Сотрудники». None — проверка членства выключена (как без STAFF_CHAT_ID)."""
+    return None
+
+
+@pytest.fixture
+async def h(db, org, monkeypatch, caplog, staff_chat):
+    org = org.model_copy(update={"dispatcher_chat_id": DISPATCH_CHAT_ID, "staff_chat_id": staff_chat})
     bot = Bot(token="test", auto_requests=False, auto_check_subscriptions=False)
     harness = None
 
@@ -46,6 +52,13 @@ async def h(db, org, monkeypatch, caplog):
             raise AssertionError("MAX: `message` or `notification` required")
         harness.callbacks.append({"message": message, "notification": notification})
 
+    async def fake_get_chat_member(chat_id, user_id):
+        harness.member_checks += 1
+        if harness.members_api_down:
+            raise ConnectionError("MAX недоступен")
+        assert chat_id == staff_chat
+        return SimpleNamespace(user_id=user_id) if user_id in harness.staff_members else None
+
     async def fake_get_me():
         return SimpleNamespace(username="test_bot", first_name="Бот", user_id=1)
 
@@ -53,6 +66,7 @@ async def h(db, org, monkeypatch, caplog):
     monkeypatch.setattr(bot, "send_callback", fake_send_callback)
     monkeypatch.setattr(bot, "edit_message", fake_edit_message)
     monkeypatch.setattr(bot, "get_me", fake_get_me)
+    monkeypatch.setattr(bot, "get_chat_member", fake_get_chat_member)
 
     dp = create_dispatcher(org, db)
     await dp.startup(bot)

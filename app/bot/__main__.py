@@ -30,6 +30,10 @@ async def main() -> None:
     if not settings.bot_token:
         sys.exit("Не задан MAX_BOT_TOKEN (см. .env.example)")
 
+    if settings.org.staff_chat_id is None:
+        logging.warning("STAFF_CHAT_ID не задан — ботом может пользоваться любой пользователь MAX")
+    else:
+        logging.info("Доступ только участникам чата сотрудников")
     db = await open_db(settings.database_url, settings.org)
     bot = Bot(token=settings.bot_token)
     dp = create_dispatcher(settings.org, db)

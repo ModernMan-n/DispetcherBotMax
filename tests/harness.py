@@ -30,6 +30,10 @@ class Harness:
         self.sent: list[dict] = []  # исходящие сообщения
         self.callbacks: list[dict] = []  # ответы на нажатия (правки сообщения и всплывашки)
         self.edits: list[dict] = []  # bot.edit_message — обновление карточек в других местах
+        # Чат «Сотрудники»: кто в нём состоит, сколько раз бот спросил MAX, «упал» ли MAX
+        self.staff_members: set[int] = {APPLICANT["user_id"], WORKER["user_id"], WORKER2["user_id"]}
+        self.member_checks = 0
+        self.members_api_down = False
 
     # --- что ответил бот ---
 
@@ -111,6 +115,12 @@ class Harness:
                 "body": {"mid": mid or f"b{n}", "seq": n, "text": "Сообщение с кнопками"},
             },
         })
+
+    async def chat_event(self, update_type: str, *, chat_id: int, user: dict) -> None:
+        """user_added / user_removed в групповом чате."""
+        n = next(_seq)
+        await self._feed({"update_type": update_type, "timestamp": n, "chat_id": chat_id,
+                          "user": user, "is_channel": False})
 
     async def press_in_chat(self, payload: str, user=WORKER, mid: str | None = None) -> None:
         await self.press(payload, user=user, chat_id=DISPATCH_CHAT_ID, chat_type="chat", mid=mid)
