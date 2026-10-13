@@ -48,6 +48,18 @@ TRANSITIONS: dict[Status, set[Status]] = {
 ACTIVE_STATUSES = (Status.NEW, Status.IN_PROGRESS)
 
 
+class Role(StrEnum):
+    """Роль сотрудника в боте и веб-интерфейсе."""
+
+    ADMIN = "admin"  # заявки + управление специалистами
+    SPECIALIST = "specialist"  # работает с заявками
+    VIEWER = "viewer"  # руководство: только смотрит аналитику и заявки
+
+
+# Кто работает с заявками (получает их в личку, берёт, закрывает)
+WORKING_ROLES = (Role.ADMIN, Role.SPECIALIST)
+
+
 class Base(DeclarativeBase):
     pass
 
@@ -82,6 +94,7 @@ class Assignee(Base):
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     # «На линии»: получает уведомления о новых заявках своих направлений
     on_duty: Mapped[bool] = mapped_column(Boolean, default=False)
+    role: Mapped[str] = mapped_column(String(16), default=Role.SPECIALIST)
 
     directions: Mapped[list[AssigneeDirection]] = relationship(
         lazy="selectin", cascade="all, delete-orphan"
@@ -99,6 +112,10 @@ class Assignee(Base):
     @property
     def direction_codes(self) -> list[str]:
         return [d.category for d in self.directions]
+
+    @property
+    def works_requests(self) -> bool:
+        return self.role in WORKING_ROLES
 
 
 class AssigneeDirection(Base):
@@ -166,3 +183,30 @@ class CardMessage(Base):
     chat_id: Mapped[int | None] = mapped_column(BigInteger)
     user_id: Mapped[int | None] = mapped_column(BigInteger)
     sent_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+
+
+class LoginCode(Base):
+    """Одноразовый код входа в веб-интерфейс, бот присылает его в личку MAX. Храним только хеш."""
+
+    __tablename__ = "login_codes"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    assignee_id: Mapped[int] = mapped_column(ForeignKey("assignees.id", ondelete="CASCADE"), index=True)
+    code_hash: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime)
+    attempts: Mapped[int] = mapped_column(default=0)
+    used: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class WebSession(Base):
+    """Сессия веб-интерфейса. В cookie лежит случайный токен, в БД — только его хеш."""
+
+    __tablename__ = "web_sessions"
+
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    assignee_id: Mapped[int] = mapped_column(ForeignKey("assignees.id", ondelete="CASCADE"), index=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime)
+
+    assignee: Mapped[Assignee] = relationship(lazy="selectin")

@@ -4,289 +4,162 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Дашборд диспетчерской</title>
-<style>
-:root {
-  color-scheme: light;
-  --page: #f9f9f7;
-  --surface: #fcfcfb;
-  --text-primary: #0b0b0b;
-  --text-secondary: #52514e;
-  --text-muted: #898781;
-  --grid: #e1e0d9;
-  --axis: #c3c2b7;
-  --border: rgba(11,11,11,0.10);
-  --bar: #2a78d6;
-  --bar-track: #cde2fb;
-  --critical: #d03b3b;
-  --good-text: #006300;
-  --hover-wash: rgba(11,11,11,0.04);
-}
-@media (prefers-color-scheme: dark) {
-  :root:where(:not([data-theme="light"])) {
-    color-scheme: dark;
-    --page: #0d0d0d;
-    --surface: #1a1a19;
-    --text-primary: #ffffff;
-    --text-secondary: #c3c2b7;
-    --text-muted: #898781;
-    --grid: #2c2c2a;
-    --axis: #383835;
-    --border: rgba(255,255,255,0.10);
-    --bar: #3987e5;
-    --bar-track: #184f95;
-    --critical: #d03b3b;
-    --good-text: #0ca30c;
-    --hover-wash: rgba(255,255,255,0.06);
-  }
-}
-:root[data-theme="dark"] {
-  color-scheme: dark;
-  --page: #0d0d0d; --surface: #1a1a19; --text-primary: #ffffff; --text-secondary: #c3c2b7;
-  --text-muted: #898781; --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10); --bar: #3987e5; --bar-track: #184f95;
-  --critical: #d03b3b; --good-text: #0ca30c; --hover-wash: rgba(255,255,255,0.06);
-}
-
-* { box-sizing: border-box; }
-body {
-  margin: 0; background: var(--page); color: var(--text-primary);
-  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
-}
-main { max-width: 1180px; margin: 0 auto; padding: 24px 16px 48px; }
-header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; margin-bottom: 16px; }
-h1 { font-size: 22px; font-weight: 600; margin: 0; }
-h2 { font-size: 15px; font-weight: 600; margin: 0 0 2px; }
-.sub { color: var(--text-secondary); font-size: 13px; }
-.badge {
-  font-size: 12px; padding: 2px 8px; border-radius: 999px;
-  border: 1px solid var(--border); color: var(--text-secondary);
-}
-
-.filters { display: flex; gap: 8px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
-.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--surface); }
-.seg button {
-  border: 0; background: none; color: var(--text-secondary); font: inherit;
-  padding: 6px 14px; cursor: pointer;
-}
-.seg button + button { border-left: 1px solid var(--border); }
-.seg button:hover { background: var(--hover-wash); }
-.seg button[aria-pressed="true"] { color: var(--text-primary); font-weight: 600; background: var(--hover-wash); }
-
-#content { transition: opacity .15s; }
-#content.loading { opacity: .5; }
-
-.kpi-groups { display: grid; grid-template-columns: 3fr 4fr; gap: 12px 24px; margin-bottom: 16px; }
-@media (max-width: 1100px) { .kpi-groups { grid-template-columns: 1fr; } }
-.kpi-group h3 { font-size: 12px; font-weight: 500; color: var(--text-muted); margin: 0 0 6px; text-transform: uppercase; letter-spacing: .04em; }
-.kpis { display: grid; gap: 12px; }
-.kpis.now { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-.kpis.period { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-@media (max-width: 560px) { .kpis { gap: 8px; } .kpis.period { grid-template-columns: repeat(2, minmax(0, 1fr)); } .tile { padding: 12px; } }
-.tile, .card {
-  background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
-}
-.tile { padding: 14px 16px; }
-.tile .label { color: var(--text-secondary); font-size: 13px; }
-.tile .value { font-size: 24px; font-weight: 600; margin-top: 2px; line-height: 1.25; overflow-wrap: normal; }
-.tile .note { color: var(--text-muted); font-size: 12px; margin-top: 2px; }
-.tile.group-start { position: relative; }
-.status-critical { display: inline-flex; align-items: center; gap: 4px; color: var(--text-primary); }
-.status-critical svg { flex: none; }
-.status-ok { color: var(--good-text); }
-
-.card { padding: 16px; margin-bottom: 12px; min-width: 0; }
-
-
-
-
-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-th { text-align: left; font-weight: 500; color: var(--text-muted); padding: 6px 8px; border-bottom: 1px solid var(--grid); white-space: nowrap; }
-td { padding: 8px; border-bottom: 1px solid var(--grid); vertical-align: top; }
-td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
-tr:last-child td { border-bottom: 0; }
-.meter { display: inline-block; vertical-align: middle; width: 60px; height: 6px; border-radius: 3px; background: var(--bar-track); margin-left: 8px; overflow: hidden; }
-.meter b { display: block; height: 100%; background: var(--bar); border-radius: 3px; }
-.table-wrap { overflow-x: auto; }
-.empty { color: var(--text-muted); padding: 8px 0; }
-.desc { color: var(--text-secondary); max-width: 280px; }
-.error { color: var(--text-primary); padding: 16px; }
-</style>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
-<main>
-  <header>
-    <h1 id="title">Диспетчерская</h1>
-    <span class="badge" id="demo" hidden>Демо-данные</span>
-    <span class="sub" id="updated"></span>
-  </header>
-
-  <div class="filters" role="group" aria-label="Период">
-    <span class="sub">Период:</span>
-    <div class="seg" id="period">
-      <button data-days="7">7 дней</button>
-      <button data-days="30">30 дней</button>
-      <button data-days="90">90 дней</button>
+<div class="app">
+  <aside class="sidebar" aria-label="Навигация">
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+      </div>
+      <div>
+        <div class="brand-name">Диспетчерская</div>
+        <div class="brand-org" id="org-name"></div>
+      </div>
     </div>
+    <nav class="nav">
+      <div class="nav-title">Аналитика</div>
+      <a href="#overview" data-page="overview">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M8 17v-5M12 17V8M16 17v-3"/></svg>
+        <span>Обзор</span>
+      </a>
+      <div class="nav-title">Работа</div>
+      <a href="#requests" data-page="requests">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"/><rect x="9" y="3" width="6" height="4" rx="1"/><path d="M9 12h6M9 16h4"/></svg>
+        <span>Заявки</span>
+      </a>
+      <div class="nav-title" data-perm="manage_staff">Управление</div>
+      <a href="#staff" data-page="staff" data-perm="manage_staff">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="4"/><path d="M2 21a7 7 0 0 1 14 0M16 4a4 4 0 0 1 0 8M22 21a7 7 0 0 0-4-6.3"/></svg>
+        <span>Сотрудники</span>
+      </a>
+    </nav>
+    <div class="sidebar-foot">
+      <div class="demo-note" id="demo" hidden>Демо-данные, только просмотр</div>
+      <div class="version">Обновлено <span id="updated">—</span></div>
+    </div>
+  </aside>
+
+  <main>
+    <div class="topbar">
+      <h1 id="page-title">Обзор</h1>
+      <div class="topbar-right">
+        <label class="select-pill" id="period-pill">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
+          <select id="period" aria-label="Период">
+            <option value="7">Последние 7 дней</option>
+            <option value="30">Последние 30 дней</option>
+            <option value="90">Последние 90 дней</option>
+          </select>
+          <svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+        </label>
+        <div class="user-chip" id="user-chip" hidden>
+          <span class="avatar" id="user-initials" aria-hidden="true"></span>
+          <div>
+            <div class="who-name" id="user-name"></div>
+            <div class="who-role" id="user-role"></div>
+          </div>
+          <button class="btn sm ghost" id="logout" type="button">Выйти</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="error" id="error" hidden></div>
+
+    <!-- Обзор -->
+    <section id="page-overview" class="page">
+      <div id="content">
+        <section class="kpis" id="kpis" aria-label="Показатели за период"></section>
+        <div class="row2">
+          <section class="card">
+            <div class="card-head"><h2>Очередь сейчас</h2></div>
+            <div class="queue" id="queue"></div>
+          </section>
+          <section class="card">
+            <div class="card-head"><h2>Исполнители</h2><span class="card-sub" id="assignees-sub"></span></div>
+            <div class="table-wrap" id="assignees"></div>
+          </section>
+        </div>
+        <section class="card">
+          <div class="card-head"><h2>Просроченные заявки</h2><span class="card-sub">не закрыты дольше норматива категории</span></div>
+          <div class="table-wrap" id="overdue"></div>
+        </section>
+      </div>
+    </section>
+
+    <!-- Заявки -->
+    <section id="page-requests" class="page" hidden>
+      <div class="toolbar">
+        <div class="tabs" role="tablist" id="req-tabs">
+          <button role="tab" data-scope="active">Активные</button>
+          <button role="tab" data-scope="mine" data-perm="work">Мои</button>
+          <button role="tab" data-scope="closed">Закрытые</button>
+        </div>
+        <span class="card-sub" id="req-total"></span>
+      </div>
+      <section class="card">
+        <div class="table-wrap" id="requests"></div>
+      </section>
+    </section>
+
+    <!-- Сотрудники -->
+    <section id="page-staff" class="page" hidden>
+      <div class="toolbar">
+        <span class="card-sub">Специалисты получают заявки своих направлений. Войти сотрудник может после того, как один раз напишет боту /staff.</span>
+        <button class="btn primary" id="staff-add" type="button">+ Добавить сотрудника</button>
+      </div>
+      <section class="card">
+        <div class="table-wrap" id="staff"></div>
+      </section>
+    </section>
+  </main>
+</div>
+
+<!-- Окно заявки -->
+<dialog class="panel" id="req-dialog" aria-labelledby="req-title">
+  <div class="panel-head">
+    <h2 id="req-title"></h2>
+    <button class="close-x" type="button" data-close aria-label="Закрыть">✕</button>
   </div>
+  <div class="panel-body" id="req-body"></div>
+  <div class="panel-foot" id="req-foot"></div>
+</dialog>
 
-  <div class="card error" id="error" hidden></div>
-  <div id="content">
-    <section class="kpi-groups" aria-label="Ключевые показатели">
-      <div class="kpi-group"><h3>Сейчас</h3><div class="kpis now" id="kpis-now"></div></div>
-      <div class="kpi-group"><h3 id="period-title">За период</h3><div class="kpis period" id="kpis-period"></div></div>
-    </section>
+<!-- Окно сотрудника -->
+<dialog class="panel" id="staff-dialog" aria-labelledby="staff-title">
+  <form id="staff-form" novalidate>
+    <div class="panel-head">
+      <h2 id="staff-title"></h2>
+      <button class="close-x" type="button" data-close aria-label="Закрыть">✕</button>
+    </div>
+    <div class="panel-body">
+      <div class="form-error" id="staff-error" hidden></div>
+      <label class="field"><span>Имя</span><input class="input" name="name" required maxlength="128"></label>
+      <label class="field"><span>Телефон</span><input class="input" name="phone" type="tel" required placeholder="+7 900 123-45-67"></label>
+      <p class="hint" id="phone-hint" hidden>После смены номера сотруднику нужно заново написать боту /staff.</p>
+      <label class="field"><span>Роль</span><select class="input" name="role" id="staff-role"></select></label>
+      <div class="field" id="directions-field">
+        <span>Направления</span>
+        <div class="checks" id="staff-directions"></div>
+        <span class="hint">Заявки этих категорий приходят специалисту в MAX, когда он на линии.</span>
+      </div>
+      <label class="check" id="active-field"><input type="checkbox" name="active"> Активен (может входить и работать)</label>
+    </div>
+    <div class="panel-foot">
+      <button class="btn danger" type="button" id="staff-delete">Удалить</button>
+      <span class="spacer"></span>
+      <button class="btn" type="button" data-close>Отмена</button>
+      <button class="btn primary" type="submit">Сохранить</button>
+    </div>
+  </form>
+</dialog>
 
-    <section class="card">
-      <h2>Исполнители</h2>
-      <div class="sub" style="margin-bottom:8px">Закрытые за период и текущая нагрузка</div>
-      <div class="table-wrap" id="assignees"></div>
-    </section>
+<div class="toast" id="toast" role="status" hidden></div>
 
-    <section class="card">
-      <h2>Просроченные заявки</h2>
-      <div class="sub" style="margin-bottom:8px">Не закрыты дольше норматива категории — сейчас</div>
-      <div class="table-wrap" id="overdue"></div>
-    </section>
-  </div>
-</main>
-
-<script>
-"use strict";
-
-const ALERT_ICON = '<svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="7" fill="var(--critical)"/><rect x="7.1" y="3.8" width="1.8" height="5.4" rx=".9" fill="#fff"/><circle cx="8" cy="11.6" r="1.05" fill="#fff"/></svg>';
-const STATUS_RU = { new: "новая", in_progress: "в работе" };
-
-
-// --- маленькие помощники DOM (подписи — данные, вставляем только через textContent) ---
-function el(tag, attrs = {}, ...children) {
-  const node = document.createElement(tag);
-  for (const [k, v] of Object.entries(attrs)) {
-    if (k === "class") node.className = v;
-    else if (k === "html") node.innerHTML = v;  // только для наших статичных SVG-иконок
-    else node.setAttribute(k, v);
-  }
-  for (const c of children) {
-    if (c == null) continue;
-    node.append(c instanceof Node ? c : document.createTextNode(String(c)));
-  }
-  return node;
-}
-// --- KPI ---
-// «17 ч 34 мин» → «17 ч» и «34 мин» не разрываются внутри себя
-function keepPairs(text) {
-  return typeof text === "string" ? text.replace(/(\d) /g, "$1\u00a0") : text;
-}
-
-function tile(label, value, note) {
-  value = keepPairs(value);
-  return el("div", { class: "tile" },
-    el("div", { class: "label" }, label),
-    el("div", { class: "value" }, value),
-    note ? el("div", { class: "note" }, note) : null,
-  );
-}
-
-function renderKpis(d) {
-  const p = d.period, n = d.now;
-  const overdueValue = n.overdue > 0
-    ? el("span", { class: "status-critical", html: ALERT_ICON }, String(n.overdue))
-    : "0";
-  document.getElementById("kpis-now").replaceChildren(
-    tile("Новые", n.new, "ждут исполнителя"),
-    tile("В работе", n.in_progress, "у исполнителей"),
-    tile("Просрочено", overdueValue, n.overdue > 0 ? "дольше норматива" : "всё в срок"),
-  );
-  document.getElementById("period-title").textContent = `За ${d.days} дней`;
-  document.getElementById("kpis-period").replaceChildren(
-    tile("Поступило", p.created, p.cancelled ? `отменено: ${p.cancelled}` : null),
-    tile("Закрыто", p.done, p.on_time_pct != null ? `в срок: ${p.on_time_pct}%` : null),
-    tile("Время до взятия", p.avg_take ?? "—", "в среднем"),
-    tile("Время до закрытия", p.avg_close ?? "—", "в среднем, от подачи"),
-  );
-}
-
-// --- Таблицы ---
-function renderAssignees(list) {
-  const box = document.getElementById("assignees");
-  if (!list.length) { box.replaceChildren(el("div", { class: "empty" }, "За период никто не закрывал заявки")); return; }
-  const max = Math.max(1, ...list.map(a => a.done));
-  const rows = list.map(a => {
-    const meter = el("span", { class: "meter" }, el("b"));
-    meter.firstChild.style.width = `${(a.done / max) * 100}%`;
-    return el("tr", {},
-      el("td", {}, a.name),
-      el("td", { class: "num" }, a.done, meter),
-      el("td", { class: "num" }, a.in_progress),
-      el("td", { class: "num" }, a.avg_close ?? "—"),
-      el("td", { class: "num" }, a.on_time_pct != null ? `${a.on_time_pct}%` : "—"),
-    );
-  });
-  box.replaceChildren(el("table", {},
-    el("thead", {}, el("tr", {},
-      el("th", {}, "Исполнитель"), el("th", { class: "num" }, "Закрыто"), el("th", { class: "num" }, "В работе"),
-      el("th", { class: "num" }, "Ср. время закрытия"), el("th", { class: "num" }, "В срок"))),
-    el("tbody", {}, ...rows),
-  ));
-}
-
-function renderOverdue(list) {
-  const box = document.getElementById("overdue");
-  if (!list.length) { box.replaceChildren(el("div", { class: "empty status-ok" }, "Просроченных заявок нет")); return; }
-  const rows = list.map(r => el("tr", {},
-    el("td", { class: "num" }, `№${r.id}`),
-    el("td", {}, r.category),
-    el("td", {}, r.place),
-    el("td", { class: "desc" }, r.description),
-    el("td", { style: "white-space:nowrap" }, STATUS_RU[r.status] ?? r.status),
-    el("td", {}, r.assignee ?? "—"),
-    el("td", { class: "num" }, r.age),
-    el("td", { class: "num" }, el("span", { class: "status-critical", html: ALERT_ICON }, `+${r.over_by}`)),
-  ));
-  box.replaceChildren(el("table", {},
-    el("thead", {}, el("tr", {},
-      el("th", { class: "num" }, "№"), el("th", {}, "Категория"), el("th", {}, "Место"), el("th", {}, "Проблема"),
-      el("th", {}, "Статус"), el("th", {}, "Исполнитель"), el("th", { class: "num" }, "Висит"),
-      el("th", { class: "num" }, "Сверх нормы"))),
-    el("tbody", {}, ...rows),
-  ));
-}
-
-// --- Загрузка ---
-function render(d) {
-  document.getElementById("title").textContent = `Диспетчерская · ${d.org_name}`;
-  document.getElementById("demo").hidden = !d.demo;
-  document.getElementById("updated").textContent = `обновлено ${d.generated_at}`;
-  renderKpis(d);
-  renderAssignees(d.assignees);
-  renderOverdue(d.overdue);
-}
-
-async function load(days) {
-  const content = document.getElementById("content");
-  content.classList.add("loading");
-  document.querySelectorAll("#period button").forEach(b =>
-    b.setAttribute("aria-pressed", String(Number(b.dataset.days) === days)));
-  try {
-    const res = await fetch(`/api/stats?days=${days}`);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    render(await res.json());
-    document.getElementById("error").hidden = true;
-    try { localStorage.setItem("days", String(days)); } catch (_) {}
-  } catch (e) {
-    const err = document.getElementById("error");
-    err.textContent = `Не удалось загрузить данные: ${e.message}`;
-    err.hidden = false;
-  } finally {
-    content.classList.remove("loading");
-  }
-}
-
-document.querySelectorAll("#period button").forEach(b =>
-  b.addEventListener("click", () => load(Number(b.dataset.days))));
-
-let initialDays = 30;
-try { initialDays = Number(localStorage.getItem("days")) || 30; } catch (_) {}
-if (![7, 30, 90].includes(initialDays)) initialDays = 30;
-load(initialDays);
-</script>
+<script src="/static/app.js"></script>
 </body>
 </html>

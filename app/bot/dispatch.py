@@ -253,7 +253,13 @@ def build_dispatch_router(org: OrgConfig, db: Database, members: MembershipCheck
                 specialist = await staff.get_specialist(s, org.org_id, user.user_id)
                 assignee = specialist or await repo.get_or_create_assignee(s, org.org_id, user.user_id, name)
                 assignee_id = assignee.id
-            await repo.set_status(s, req, status, changed_by=user.user_id, assignee_id=assignee_id)
+            try:
+                await repo.set_status(s, req, status, changed_by=user.user_id, assignee_id=assignee_id)
+            except repo.TransitionError:
+                # Заявку только что изменили в другом месте (например, в веб-интерфейсе)
+                await s.refresh(req, ["assignee"])
+                await event.edit(text=render_card(org, req), attachments=card_keyboard(req))
+                return
             await s.refresh(req, ["assignee"])
         log.info("Заявка №%s → %s (%s)", req.id, status, user.user_id)
         await event.edit(text=render_card(org, req), attachments=card_keyboard(req))

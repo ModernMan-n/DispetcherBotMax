@@ -80,3 +80,30 @@ async def test_api(monkeypatch, tmp_path):
             assert res.status_code == 200
             assert res.json()["demo"] is True
             assert (await client.get("/api/stats", params={"days": 0})).status_code == 422
+
+
+async def test_change_vs_previous_period(db, org):
+    async with db.session() as s, s.begin():
+        # Текущие 7 дней: 2 заявки, одна закрыта за 2 ч
+        cur = await _req(s, org, created=NOW - timedelta(days=1))
+        await repo.set_status(s, cur, Status.IN_PROGRESS, changed_by=1, now=cur.created_at + timedelta(minutes=10))
+        await repo.set_status(s, cur, Status.DONE, changed_by=1, now=cur.created_at + timedelta(hours=2))
+        await _req(s, org, created=NOW - timedelta(days=2))
+        # Предыдущие 7 дней: 1 заявка, закрыта за 4 ч
+        old = await _req(s, org, created=NOW - timedelta(days=10))
+        await repo.set_status(s, old, Status.IN_PROGRESS, changed_by=1, now=old.created_at + timedelta(minutes=20))
+        await repo.set_status(s, old, Status.DONE, changed_by=1, now=old.created_at + timedelta(hours=4))
+        # Ещё раньше — не учитывается ни там, ни там
+        await _req(s, org, created=NOW - timedelta(days=20))
+
+    async with db.session() as s:
+        d = await stats.collect(s, org, days=7, now=NOW)
+    assert d["change"] == {"created": 100.0, "done": 0.0, "avg_take": -50.0, "avg_close": -50.0}
+
+
+async def test_change_none_without_previous_data(db, org):
+    async with db.session() as s, s.begin():
+        await _req(s, org, created=NOW - timedelta(days=1))
+    async with db.session() as s:
+        d = await stats.collect(s, org, days=7, now=NOW)
+    assert d["change"]["created"] is None

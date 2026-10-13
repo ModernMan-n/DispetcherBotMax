@@ -7,7 +7,7 @@ import re
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import ACTIVE_STATUSES, Assignee, AssigneeDirection, CardMessage, Request
+from app.models import ACTIVE_STATUSES, WORKING_ROLES, Assignee, AssigneeDirection, CardMessage, Request, Role
 
 
 class StaffError(Exception):
@@ -35,7 +35,7 @@ def mask_phone(phone: str | None) -> str:
 
 
 async def add_specialist(
-    s: AsyncSession, org_id: str, *, name: str, phone: str, directions: list[str]
+    s: AsyncSession, org_id: str, *, name: str, phone: str, directions: list[str], role: Role = Role.SPECIALIST
 ) -> Assignee:
     norm = normalize_phone(phone)
     if norm is None:
@@ -43,7 +43,7 @@ async def add_specialist(
     if await s.scalar(select(Assignee).where(Assignee.org_id == org_id, Assignee.phone == norm)):
         raise StaffError("Специалист с таким номером уже есть")
     a = Assignee(
-        org_id=org_id, name=name, phone=norm, active=True, on_duty=False,
+        org_id=org_id, name=name, phone=norm, active=True, on_duty=False, role=role,
         directions=[AssigneeDirection(category=c) for c in dict.fromkeys(directions)],
     )
     s.add(a)
@@ -74,8 +74,8 @@ async def get_specialist_by_id(s: AsyncSession, org_id: str, assignee_id: int) -
 # --- вход в боте ---
 
 
-async def get_specialist(s: AsyncSession, org_id: str, max_id: int) -> Assignee | None:
-    """Активный специалист, привязанный к этому аккаунту MAX."""
+async def get_staff_member(s: AsyncSession, org_id: str, max_id: int) -> Assignee | None:
+    """Активный сотрудник любой роли, привязанный к этому аккаунту MAX."""
     return await s.scalar(
         select(Assignee).where(
             Assignee.org_id == org_id,
@@ -84,6 +84,12 @@ async def get_specialist(s: AsyncSession, org_id: str, max_id: int) -> Assignee 
             Assignee.active.is_(True),
         )
     )
+
+
+async def get_specialist(s: AsyncSession, org_id: str, max_id: int) -> Assignee | None:
+    """Сотрудник, который работает с заявками (специалист или администратор)."""
+    a = await get_staff_member(s, org_id, max_id)
+    return a if a is not None and a.works_requests else None
 
 
 async def link_by_phone(s: AsyncSession, org_id: str, phone: str, max_id: int) -> Assignee:
@@ -99,7 +105,7 @@ async def link_by_phone(s: AsyncSession, org_id: str, phone: str, max_id: int) -
     # Если этот аккаунт раньше «взял» заявку в чате без регистрации — запись останется отдельной,
     # история не теряется.
     a.max_id = max_id
-    a.on_duty = True
+    a.on_duty = a.works_requests  # руководству заявки не рассылаются
     await s.flush()
     return a
 
@@ -125,6 +131,7 @@ async def on_duty_for_category(s: AsyncSession, org_id: str, category: str) -> l
             Assignee.active.is_(True),
             Assignee.on_duty.is_(True),
             Assignee.max_id.is_not(None),
+            Assignee.role.in_(WORKING_ROLES),
             AssigneeDirection.category == category,
         )
     )

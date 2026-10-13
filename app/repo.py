@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import ACTIVE_STATUSES, TRANSITIONS, Assignee, Request, Status, StatusLog, utcnow
@@ -57,6 +57,17 @@ async def set_status(
     if status not in TRANSITIONS[current]:
         raise TransitionError(f"Нельзя перевести заявку №{req.id} из {current} в {status}")
     now = now or utcnow()
+    # Бот и веб-интерфейс — разные процессы. Меняем статус, только если он всё ещё тот,
+    # что мы прочитали: иначе двое могли бы взять одну заявку.
+    result = await s.execute(
+        update(Request)
+        .where(Request.id == req.id, Request.status == current)
+        .values(status=status)
+        .execution_options(synchronize_session=False)
+    )
+    if result.rowcount != 1:
+        await s.refresh(req)
+        raise TransitionError(f"Заявку №{req.id} уже изменили")
 
     if status == Status.IN_PROGRESS:
         req.taken_at = now

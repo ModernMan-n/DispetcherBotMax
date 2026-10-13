@@ -2,6 +2,8 @@
 
     python -m scripts.staff list
     python -m scripts.staff add "Иван Петров" +79001234567 network computers
+    python -m scripts.staff add "Директор" +79001112233 --role viewer
+    python -m scripts.staff role 3 admin     # роли: admin, specialist, viewer
     python -m scripts.staff directions 3 network 1c
     python -m scripts.staff deactivate 3
     python -m scripts.staff activate 3
@@ -16,9 +18,10 @@ import argparse
 import asyncio
 import sys
 
-from app import staff
+from app import auth, staff
 from app.config import load_settings
 from app.db import open_db
+from app.models import Role
 
 
 def _check_directions(org, codes: list[str]) -> None:
@@ -41,6 +44,7 @@ async def run(args: argparse.Namespace) -> None:
                 for a in rows:
                     dirs = ", ".join(org.category_titles.get(c, c) for c in a.direction_codes) or "—"
                     flags = [
+                        auth.ROLE_TITLES[Role(a.role)],
                         "активен" if a.active else "ОТКЛЮЧЁН",
                         "вошёл в бот" if a.max_id else "ещё не входил",
                         "на линии" if a.on_duty else "не на линии",
@@ -52,7 +56,8 @@ async def run(args: argparse.Namespace) -> None:
                 _check_directions(org, args.directions)
                 try:
                     a = await staff.add_specialist(
-                        s, org.org_id, name=args.name, phone=args.phone, directions=args.directions
+                        s, org.org_id, name=args.name, phone=args.phone, directions=args.directions,
+                        role=Role(args.role),
                     )
                 except staff.StaffError as e:
                     sys.exit(str(e))
@@ -67,10 +72,17 @@ async def run(args: argparse.Namespace) -> None:
                 await staff.set_directions(s, a, args.directions)
             elif args.cmd == "deactivate":
                 a.active, a.on_duty = False, False
+                await auth.end_all_sessions(s, a.id)
             elif args.cmd == "activate":
                 a.active = True
             elif args.cmd == "unlink":
                 a.max_id, a.on_duty = None, False
+                await auth.end_all_sessions(s, a.id)
+            elif args.cmd == "role":
+                a.role = Role(args.role)
+                if not a.works_requests:
+                    a.on_duty = False
+                await auth.end_all_sessions(s, a.id)
             print("Готово.")
     finally:
         await db.close()
@@ -83,10 +95,14 @@ def main() -> None:
     p = sub.add_parser("add", help="добавить специалиста")
     p.add_argument("name")
     p.add_argument("phone")
-    p.add_argument("directions", nargs="+", help="коды категорий из config/org.yaml")
+    p.add_argument("directions", nargs="*", help="коды категорий из config/org.yaml")
+    p.add_argument("--role", choices=[r.value for r in Role], default=Role.SPECIALIST.value)
     p = sub.add_parser("directions", help="заменить направления")
     p.add_argument("id", type=int)
     p.add_argument("directions", nargs="+")
+    p = sub.add_parser("role", help="сменить роль")
+    p.add_argument("id", type=int)
+    p.add_argument("role", choices=[r.value for r in Role])
     for cmd, help_ in (("deactivate", "отключить"), ("activate", "включить"), ("unlink", "отвязать аккаунт MAX")):
         sub.add_parser(cmd, help=help_).add_argument("id", type=int)
     asyncio.run(run(parser.parse_args()))

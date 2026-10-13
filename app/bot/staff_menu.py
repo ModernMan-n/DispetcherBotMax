@@ -55,13 +55,21 @@ def build_staff_router(org: OrgConfig, db: Database) -> Router:
     router.filter(InDialog())
 
     async def show_status(answer, a: Assignee) -> None:
+        if not a.works_requests:
+            # Руководство: в боте только подаёт заявки как все, аналитика — в веб-интерфейсе
+            await answer(
+                text=f"Вы вошли как {a.name} (руководство). Аналитика и заявки — в веб-интерфейсе, "
+                     f"код для входа придёт сюда.",
+                attachments=[ui.main_menu()],
+            )
+            return
         await answer(text=status_text(org, a), attachments=[ui.main_menu(a)])
 
     @router.message_created(Command(["staff", "sotrudnik"]))
     async def on_staff_command(event: MessageCreated, context: BaseContext):
         await context.clear()
         async with db.session() as s:
-            a = await staff.get_specialist(s, org.org_id, event.message.sender.user_id)
+            a = await staff.get_staff_member(s, org.org_id, event.message.sender.user_id)
         if a is not None:
             await show_status(event.message.answer, a)
             return
