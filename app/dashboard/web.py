@@ -130,6 +130,11 @@ async def index(request: Request):
     return FileResponse(STATIC / "index.html")
 
 
+@app.get("/healthz")
+async def healthz() -> dict:
+    return {"ok": True}
+
+
 @app.get("/login")
 async def login_page():
     if app.state.demo:

@@ -1,0 +1,67 @@
+# Пилот на сервере: бот (webhook), дашборд и Caddy (HTTPS-сертификат получает сам).
+# Запуск и обновление: docker compose up -d --build. Подробно — deploy/README.md.
+
+x-app: &app
+  build: .
+  image: college-dispatch-bot:latest
+  env_file: .env
+  environment: &app-env
+    TZ: Europe/Moscow
+  volumes:
+    - ./data:/app/data
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options: { max-size: "10m", max-file: "5" }
+
+services:
+  # Одноразово применяет миграции до запуска бота и дашборда — чтобы они не делали это наперегонки.
+  migrate:
+    <<: *app
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+
+  bot:
+    <<: *app
+    command: ["python", "-m", "app.bot"]
+    environment:
+      <<: *app-env
+      BOT_MODE: webhook
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+
+  web:
+    <<: *app
+    command: ["python", "-m", "app.dashboard", "--port", "8000"]
+    environment:
+      <<: *app-env
+      DASHBOARD_HOST: 0.0.0.0
+      TRUST_PROXY: "1"
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  caddy:
+    image: caddy:2.8.4
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN:?Укажите DOMAIN в .env}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [bot, web]
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
+
+volumes:
+  caddy_data:
+  caddy_config:

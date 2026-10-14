@@ -79,6 +79,10 @@ class Settings(BaseModel):
     bot_token: str | None
     database_url: str
     org: OrgConfig
+    # polling — для разработки на своём компьютере; webhook — на сервере с доменом и HTTPS
+    bot_mode: str = "polling"
+    webhook_url: str | None = None  # https://домен/max-webhook
+    webhook_secret: str | None = None  # 5–256 символов, MAX присылает его в заголовке
 
 
 def load_settings() -> Settings:
@@ -92,4 +96,7 @@ def load_settings() -> Settings:
         bot_token=os.getenv("MAX_BOT_TOKEN") or None,
         database_url=os.getenv("DATABASE_URL", f"sqlite+aiosqlite:///{ROOT / 'data' / 'bot.db'}"),
         org=org,
+        bot_mode=os.getenv("BOT_MODE", "polling"),
+        webhook_url=os.getenv("WEBHOOK_URL") or None,
+        webhook_secret=os.getenv("WEBHOOK_SECRET") or None,
     )
