@@ -13,6 +13,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from maxapi import Bot, F, Router
+from sqlalchemy import select
 from maxapi.enums.chat_type import ChatType
 from maxapi.enums.intent import Intent
 from maxapi.enums.parse_mode import ParseMode
@@ -27,7 +28,7 @@ from app.config import OrgConfig
 from app.db import Database
 from app.formatting import format_duration
 from app.membership import MembershipChecker
-from app.models import ACTIVE_STATUSES, TRANSITIONS, Priority, Request, Status, utcnow
+from app.models import ACTIVE_STATUSES, TRANSITIONS, Assignee, Priority, Request, Status, utcnow
 
 log = logging.getLogger(__name__)
 
@@ -115,10 +116,11 @@ def render_card(org: OrgConfig, req: Request) -> str:
         lines.append(f"Срок: до {local(req.due_at)}{overdue}")
     lines.append("")
     status_line = STATUS_LINE[status]
-    if status == Status.IN_PROGRESS and req.assignee:
-        status_line += f" — {esc(req.assignee.name)}, с {local(req.taken_at)}"
+    names = ", ".join(esc(a.name) for a in req.team)
+    if status == Status.IN_PROGRESS and names:
+        status_line += f" — {names}, с {local(req.taken_at)}"
     elif status == Status.DONE:
-        who = f" — {esc(req.assignee.name)}" if req.assignee else ""
+        who = f" — {names}" if names else ""
         work = req.work_time()
         status_line += f"{who}, за {format_duration(work)} работы" if work is not None else who
     lines.append(status_line)
@@ -221,12 +223,12 @@ async def sync_cards(bot: Bot, db: Database, org: OrgConfig, req: Request, *, sk
             log.warning("Не удалось обновить карточку №%s (%s)", req.id, c.message_id, exc_info=True)
 
 
-def assignee_link(req: Request) -> str:
-    """Исполнитель для уведомления заявителю: имя — ссылка на профиль MAX, чтобы можно было написать."""
-    a = req.assignee
-    if a is None:
-        return "—"
-    return profile_link(a.name, a.max_id) if a.max_id else esc(a.name)
+def team_text(req: Request) -> str:
+    """«Исполнитель: Имя» или «Исполнители: Имя, Имя» — имена ссылками на профили MAX."""
+    links = [profile_link(a.name, a.max_id) if a.max_id else esc(a.name) for a in req.team]
+    if not links:
+        return ""
+    return ("Исполнитель: " if len(links) == 1 else "Исполнители: ") + ", ".join(links)
 
 
 async def tell_applicant(
@@ -248,7 +250,7 @@ async def notify_applicant(bot: Bot, org: OrgConfig, req: Request, *, actor_max_
     key = NOTIFY_TEXT_KEY.get(Status(req.status))
     if key is None:
         return
-    await tell_applicant(bot, org, req, key, actor_max_id=actor_max_id, assignee=assignee_link(req))
+    await tell_applicant(bot, org, req, key, actor_max_id=actor_max_id, assignees=team_text(req))
 
 
 def _pressed_mid(event: MessageCallback) -> str | None:
@@ -297,6 +299,11 @@ def build_dispatch_router(org: OrgConfig, db: Database, members: MembershipCheck
                 # Кто-то успел раньше — просто показываем актуальное состояние.
                 await event.edit(text=render_card(org, req), attachments=card_keyboard(req), format=CARD_FORMAT)
                 return
+            # Один из нескольких исполнителей нажал «Вернуть в очередь» — снимаем только его
+            left = False
+            if status == Status.NEW:
+                me = await s.scalar(select(Assignee).where(Assignee.org_id == org.org_id, Assignee.max_id == user.user_id))
+                left = me is not None and await repo.leave_team(s, req, me)
             assignee_id = None
             if status == Status.IN_PROGRESS:
                 # Специалист берёт заявку под своей карточкой, остальные — заводятся по имени из MAX.
@@ -304,7 +311,8 @@ def build_dispatch_router(org: OrgConfig, db: Database, members: MembershipCheck
                 assignee = specialist or await repo.get_or_create_assignee(s, org.org_id, user.user_id, name)
                 assignee_id = assignee.id
             try:
-                await repo.set_status(s, req, status, changed_by=user.user_id, assignee_id=assignee_id)
+                if not left:
+                    await repo.set_status(s, req, status, changed_by=user.user_id, assignee_id=assignee_id)
             except repo.TransitionError:
                 # Заявку только что изменили в другом месте (например, в веб-интерфейсе)
                 await s.refresh(req, ["assignee"])
@@ -314,7 +322,11 @@ def build_dispatch_router(org: OrgConfig, db: Database, members: MembershipCheck
         log.info("Заявка №%s → %s (%s)", req.id, status, user.user_id)
         await event.edit(text=render_card(org, req), attachments=card_keyboard(req), format=CARD_FORMAT)
         await sync_cards(event.bot, db, org, req, skip_mid=_pressed_mid(event))
-        await notify_applicant(event.bot, org, req, actor_max_id=user.user_id)
+        if left:
+            await tell_applicant(event.bot, org, req, "notify_reassigned", actor_max_id=user.user_id,
+                                 assignees=team_text(req))
+        else:
+            await notify_applicant(event.bot, org, req, actor_max_id=user.user_id)
 
     @router.message_callback(Card.filter(F.act == "take"), access)
     async def on_take(event: MessageCallback, payload: Card):

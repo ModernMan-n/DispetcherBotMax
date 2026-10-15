@@ -260,10 +260,75 @@ async def test_applicant_notified_about_priority_due_and_assignment(web, disp): 
     me = (await disp.get("/api/me")).json()["id"]
     await disp.post("/api/requests/1/assign", json={"assignee_id": me})
     assert web.bot.to(APPLICANT_MAX)[-1] == (
-        f'По заявке №1 назначен другой исполнитель: <a href="max://user/{DISP_MAX}">Диспетчер Дарья</a>'
+        f'Исполнители по заявке №1 изменились. Исполнитель: <a href="max://user/{DISP_MAX}">Диспетчер Дарья</a>'
     )
 
 
 async def test_unchanged_priority_sends_nothing(web, disp):  # noqa: F811
     await disp.post("/api/requests/1/priority", json={"priority": "normal"})
     assert web.bot.to(APPLICANT_MAX) == []
+
+
+# --- несколько исполнителей ---
+
+
+async def _ids(disp, *names):
+    people = {a["name"]: a["id"] for a in (await disp.get("/api/meta")).json()["assignees"]}
+    return [people[n] for n in names]
+
+
+async def test_assign_several_assignees(web, disp):  # noqa: F811
+    spec, me = await _ids(disp, "Пётр Сетевик", "Диспетчер Дарья")
+    r = await disp.post("/api/requests/1/assign", json={"assignee_ids": [spec, me]})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == "in_progress"
+    assert [a["name"] for a in body["assignees"]] == ["Пётр Сетевик", "Диспетчер Дарья"]
+    assert body["assignee"] == "Пётр Сетевик, Диспетчер Дарья"
+
+    # Заявителю — оба исполнителя ссылками
+    assert web.bot.to(APPLICANT_MAX)[-1] == (
+        'Ваша заявка №1 взята в работу. Исполнители: <a href="max://user/1002">Пётр Сетевик</a>, '
+        f'<a href="max://user/{DISP_MAX}">Диспетчер Дарья</a>'
+    )
+    # Специалисту — уведомление с напарником и карточка (себе диспетчер не пишет)
+    assert "Вам назначена заявка №1. Вместе с вами: Диспетчер Дарья." in web.bot.to(1002)
+    assert any(t.startswith("<b>Заявка №1</b>") and "Пётр Сетевик, Диспетчер Дарья" in t for t in web.bot.to(1002))
+
+    # «Взятые мной» — у обоих
+    assert [i["id"] for i in (await disp.get("/api/requests?scope=mine")).json()["items"]] == [1]
+    async with await login(web, "+79000000002", 1002) as spec_c:
+        assert [i["id"] for i in (await spec_c.get("/api/requests?scope=mine")).json()["items"]] == [1]
+
+    # Снять одного — ему уведомление, заявителю новый состав
+    await disp.post("/api/requests/1/assign", json={"assignee_ids": [me]})
+    assert "Вас сняли с заявки №1." in web.bot.to(1002)
+    assert web.bot.to(APPLICANT_MAX)[-1].startswith("Исполнители по заявке №1 изменились. Исполнитель:")
+    history = [h["text"] for h in (await disp.get("/api/requests/1/history")).json()["items"]]
+    assert any("сняты: Пётр Сетевик" in t for t in history)
+
+    assert (await disp.post("/api/requests/1/assign", json={"assignee_ids": []})).status_code == 409
+
+
+async def test_one_of_team_releases_only_himself(web, disp):  # noqa: F811
+    spec, me = await _ids(disp, "Пётр Сетевик", "Диспетчер Дарья")
+    await disp.post("/api/requests/1/assign", json={"assignee_ids": [spec, me]})
+    r = await disp.post("/api/requests/1/action", json={"action": "release"})
+    assert r.json()["status"] == "in_progress" and r.json()["assignee"] == "Пётр Сетевик"
+    # Последний исполнитель возвращает — заявка снова в очереди
+    async with await login(web, "+79000000002", 1002) as spec_c:
+        r = await spec_c.post("/api/requests/1/action", json={"action": "release"})
+    assert r.json()["status"] == "new" and r.json()["assignees"] == []
+    assert web.bot.to(APPLICANT_MAX)[-1] == web.org.text("notify_released", id=1)
+
+
+async def test_done_by_team_credits_everyone(web, disp):  # noqa: F811
+    spec, me = await _ids(disp, "Пётр Сетевик", "Диспетчер Дарья")
+    await disp.post("/api/requests/1/assign", json={"assignee_ids": [spec, me]})
+    await disp.post("/api/requests/1/action", json={"action": "done"})
+    async with web.db.session() as s:
+        d = await stats.collect(s, web.org, days=7)
+    assert {a["name"]: a["done"] for a in d["assignees"]} == {"Пётр Сетевик": 1, "Диспетчер Дарья": 1}
+    # Закрытая заявка видна специалисту, который был в команде
+    async with await login(web, "+79000000002", 1002) as spec_c:
+        assert [i["id"] for i in (await spec_c.get("/api/requests?scope=closed")).json()["items"]] == [1]

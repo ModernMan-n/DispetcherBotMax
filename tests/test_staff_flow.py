@@ -248,3 +248,26 @@ async def test_taken_by_me_list(h, specialists):
     await h.press("s|taken", user=WORKER)
     lists = [m for m in h.in_dialog() if "Взятые вами заявки" in m["text"]]
     assert "№2" in lists[-1]["text"] and "№1" not in lists[-1]["text"]
+
+
+
+async def test_bot_release_by_one_of_team(h, db, org, specialists):
+    """В боте «Вернуть в очередь» одного из двух исполнителей снимает только его."""
+    await login(h, WORKER, NET_PHONE)
+    await login(h, WORKER2, PLUMB_PHONE)
+    await h.submit_request("Нет интернета в кабинете")
+    async with db.session() as s, s.begin():
+        req = await repo.get_request(s, org.org_id, 1)
+        net, plumb = specialists
+        await repo.set_status(s, req, Status.IN_PROGRESS, changed_by=1, assignee_id=net.id)
+        await repo.set_team(s, req, [net.id, plumb.id])
+
+    await h.press_in_chat("r|back|1", user=WORKER)  # обновить карточку
+    assert "Пётр Сетевик, Анна Сантехник" in h.last_edit.text
+
+    await h.press_in_chat("r|release|1", user=WORKER2)
+    assert "В работе — Пётр Сетевик" in h.last_edit.text and "Анна" not in h.last_edit.text
+    assert h.to_user(100)[-1]["text"].startswith("Исполнители по заявке №1 изменились")
+
+    await h.press_in_chat("r|release|1", user=WORKER)
+    assert "Новая" in h.last_edit.text

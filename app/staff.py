@@ -15,6 +15,7 @@ from app.models import (
     AssigneeDirection,
     CardMessage,
     Request,
+    RequestAssignee,
     Role,
 )
 
@@ -130,7 +131,10 @@ async def list_active_requests(
     if categories is not None:
         q = q.where(Request.category.in_(categories))
     if assignee_id is not None:
-        q = q.where(Request.assignee_id == assignee_id)
+        # «Взятые мной»: сотрудник в команде исполнителей
+        q = q.where(Request.id.in_(
+            select(RequestAssignee.request_id).where(RequestAssignee.assignee_id == assignee_id)
+        ))
     return list(await s.scalars(q.order_by(*priority_order()).limit(limit)))
 
 

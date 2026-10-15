@@ -13,6 +13,7 @@ from app.models import (
     Assignee,
     Priority,
     Request,
+    RequestAssignee,
     RequestEvent,
     Status,
     StatusLog,
@@ -55,6 +56,7 @@ async def create_request(
     )
     s.add(req)
     await s.flush()
+    await s.refresh(req, ["team", "assignee"])  # состав (пока пустой) нужен карточке уже после сессии
     return req
 
 
@@ -86,11 +88,11 @@ async def set_status(
     if status == Status.IN_PROGRESS:
         req.taken_at = now
         if assignee_id is not None:
-            req.assignee_id = assignee_id
+            await set_team(s, req, [assignee_id], now=now)
     elif status == Status.NEW:
-        # Заявку вернули в очередь: сбрасываем исполнителя.
+        # Заявку вернули в очередь: сбрасываем всех исполнителей.
         req.taken_at = None
-        req.assignee_id = None
+        await set_team(s, req, [], now=now)
     elif status in (Status.DONE, Status.CANCELLED):
         req.closed_at = now
 
@@ -98,6 +100,48 @@ async def set_status(
     req.log.append(StatusLog(status=status, changed_at=now, changed_by=changed_by))
     await s.flush()
     return req
+
+
+async def set_team(s: AsyncSession, req: Request, assignee_ids: list[int], *, now: datetime | None = None) -> None:
+    """Состав исполнителей заявки. Оставшиеся сохраняют порядок, новые добавляются в конец.
+
+    req.assignee_id — первый исполнитель (основной), чтобы старый код и аналитика работали как раньше.
+    """
+    now = now or utcnow()
+    wanted = list(dict.fromkeys(assignee_ids))
+    rows = list(await s.scalars(
+        select(RequestAssignee).where(RequestAssignee.request_id == req.id).order_by(RequestAssignee.added_at)
+    ))
+    for r in rows:
+        if r.assignee_id not in wanted:
+            await s.delete(r)
+    have = {r.assignee_id for r in rows}
+    for offset, aid in enumerate(a for a in wanted if a not in have):
+        # Микросекундный сдвиг — чтобы порядок добавления сохранялся
+        s.add(RequestAssignee(request_id=req.id, assignee_id=aid, added_at=now + timedelta(microseconds=offset)))
+    await s.flush()
+    order = [r.assignee_id for r in rows if r.assignee_id in wanted] + [a for a in wanted if a not in have]
+    req.assignee_id = order[0] if order else None
+    await s.flush()
+    await s.refresh(req, ["team", "assignee"])
+
+
+def team_ids(req: Request) -> list[int]:
+    return [a.id for a in req.team]
+
+
+async def leave_team(s: AsyncSession, req: Request, assignee: Assignee) -> bool:
+    """«Вернуть в очередь» от одного из нескольких исполнителей: снимаем только его.
+
+    True — снят, заявка остаётся в работе у остальных; False — он единственный (или не в команде),
+    тогда заявку целиком возвращают в очередь обычной сменой статуса.
+    """
+    ids = team_ids(req)
+    if assignee.id not in ids or len(ids) < 2:
+        return False
+    await set_team(s, req, [i for i in ids if i != assignee.id])
+    await log_event(s, req, "assign", f"Снял себя с заявки: {assignee.name}", actor_id=assignee.id, actor_name=assignee.name)
+    return True
 
 
 async def get_request(s: AsyncSession, org_id: str, request_id: int) -> Request | None:

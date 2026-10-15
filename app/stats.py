@@ -110,20 +110,21 @@ async def collect(s: AsyncSession, org: OrgConfig, days: int, now: datetime | No
     per_assignee: dict[int, dict] = defaultdict(
         lambda: {"name": "", "done": 0, "in_progress": 0, "close_minutes": [], "on_time": 0}
     )
+    # Выполненная заявка засчитывается каждому исполнителю команды
     for r in done:
-        if r.assignee is None:
-            continue
-        a = per_assignee[r.assignee.id]
-        a["name"] = r.assignee.name
-        a["done"] += 1
-        if r.work_time() is not None:
-            a["close_minutes"].append(_minutes(r.work_time()))
-        a["on_time"] += r.id in on_time
+        for member in r.team:
+            a = per_assignee[member.id]
+            a["name"] = member.name
+            a["done"] += 1
+            if r.work_time() is not None:
+                a["close_minutes"].append(_minutes(r.work_time()))
+            a["on_time"] += r.id in on_time
     for r in active:
-        if r.status == Status.IN_PROGRESS and r.assignee is not None:
-            a = per_assignee[r.assignee.id]
-            a["name"] = r.assignee.name
-            a["in_progress"] += 1
+        if r.status == Status.IN_PROGRESS:
+            for member in r.team:
+                a = per_assignee[member.id]
+                a["name"] = member.name
+                a["in_progress"] += 1
     assignees = []
     for a in per_assignee.values():
         avg = _Durations(a["close_minutes"]).avg
@@ -146,7 +147,7 @@ async def collect(s: AsyncSession, org: OrgConfig, days: int, now: datetime | No
                 "place": f"{org.building_titles.get(r.building, r.building)}, каб. {r.room}",
                 "description": r.description,
                 "status": r.status,
-                "assignee": r.assignee.name if r.assignee else None,
+                "assignee": ", ".join(a.name for a in r.team) or None,
                 "age": format_duration(now - r.created_at),
                 "over_by": format_duration(now - _due(r, sla)),
                 "age_min": _minutes(now - r.created_at),

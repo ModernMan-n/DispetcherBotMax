@@ -29,7 +29,7 @@ from app.config import load_settings
 from app.db import open_db
 from app.formatting import fmt_local, format_duration
 from app.membership import MembershipChecker
-from app.models import ACTIVE_STATUSES, Assignee, Priority, Role, Status, utcnow
+from app.models import ACTIVE_STATUSES, Assignee, Priority, RequestAssignee, Role, Status, utcnow
 from app.models import Request as Req
 
 log = logging.getLogger(__name__)
@@ -304,7 +304,12 @@ def visible_to(user: Assignee):
     """Условие видимости заявки. Специалист: открытые — все; закрытые — своих направлений или взятые им."""
     if Perm.VIEW_ALL in auth.perms_of(user):
         return true()
-    return or_(Req.status.in_(ACTIVE_STATUSES), Req.category.in_(user.direction_codes), Req.assignee_id == user.id)
+    return or_(Req.status.in_(ACTIVE_STATUSES), Req.category.in_(user.direction_codes), in_team(user))
+
+
+def in_team(user: Assignee):
+    """Сотрудник среди исполнителей заявки."""
+    return Req.id.in_(select(RequestAssignee.request_id).where(RequestAssignee.assignee_id == user.id))
 
 
 async def visible_request(s, request_id: int, user: Assignee) -> Req:
@@ -330,7 +335,8 @@ def request_row(r: Req, user: Assignee, now: datetime) -> dict:
         "description": r.description,
         "status": r.status,
         "assignee_id": r.assignee_id,
-        "assignee": r.assignee.name if r.assignee else None,
+        "assignee": ", ".join(a.name for a in r.team) or None,
+        "assignees": [{"id": a.id, "name": a.name} for a in r.team],
         # Активная — сколько висит; закрытая — время выполнения (от назначения до «Готово»)
         "age": format_duration(age) if r.closed_at is None
         else (format_duration(r.work_time()) if r.work_time() is not None else "—"),
@@ -359,7 +365,7 @@ async def list_requests(
     if scope == "active":
         q = q.where(Req.status.in_(ACTIVE_STATUSES)).order_by(*staff.priority_order())
     elif scope == "mine":
-        q = q.where(Req.status.in_(ACTIVE_STATUSES), Req.assignee_id == user.id).order_by(*staff.priority_order())
+        q = q.where(Req.status.in_(ACTIVE_STATUSES), in_team(user)).order_by(*staff.priority_order())
     elif scope == "direction":
         q = q.where(Req.status.in_(ACTIVE_STATUSES), Req.category.in_(user.direction_codes)) \
             .order_by(*staff.priority_order())
@@ -381,7 +387,9 @@ class CategoryBody(BaseModel):
 
 
 class AssignBody(BaseModel):
-    assignee_id: int
+    # Несколько исполнителей; assignee_id — для совместимости со старым интерфейсом
+    assignee_ids: list[int] = Field(default_factory=list, max_length=20)
+    assignee_id: int | None = None
 
 
 class EditBody(BaseModel):
@@ -412,7 +420,8 @@ async def request_category(request_id: int, body: CategoryBody, user: Assignee =
 async def request_assign(
     request_id: int, body: AssignBody, user: Assignee = Depends(require(Perm.ADMIN_REQUESTS))
 ) -> dict:
-    return await _run(actions.assign(ctx(), request_id, body.assignee_id, user), user)
+    ids = body.assignee_ids or ([body.assignee_id] if body.assignee_id else [])
+    return await _run(actions.assign(ctx(), request_id, ids, user), user)
 
 
 @app.patch("/api/requests/{request_id}")
@@ -670,7 +679,9 @@ async def staff_delete(staff_id: int, user: Assignee = Depends(require(Perm.MANA
         a = await staff.get_specialist_by_id(s, app.state.org.org_id, staff_id)
         if a is None:
             raise HTTPException(404, "Сотрудник не найден")
-        has_history = await s.scalar(select(func.count()).select_from(Req).where(Req.assignee_id == a.id))
+        has_history = await s.scalar(
+            select(func.count()).select_from(RequestAssignee).where(RequestAssignee.assignee_id == a.id)
+        ) or await s.scalar(select(func.count()).select_from(Req).where(Req.assignee_id == a.id))
         await auth.end_all_sessions(s, a.id)
         if has_history:
             # По его заявкам считается аналитика — запись оставляем, но отключаем.

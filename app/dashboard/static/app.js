@@ -230,6 +230,12 @@ function applicantLink(r) {
   }, r.applicant);
 }
 
+function team(r) {
+  const list = r.assignees || [];
+  if (!list.length) return el("span", { class: "muted" }, "—");
+  return el("div", { style: "display:grid;gap:6px" }, ...list.map(a => who(a.name)));
+}
+
 function renderRequests() {
   document.querySelectorAll("#req-tabs button").forEach(b =>
     b.setAttribute("aria-selected", String(b.dataset.scope === state.scope)));
@@ -259,7 +265,7 @@ function renderRequests() {
       el("td", { class: "desc" }, r.description),
       showApplicant ? el("td", {}, applicantLink(r)) : null,
       el("td", {}, el("div", { class: "chips" }, statusBadge(r.status), priorityBadge(r))),
-      el("td", {}, r.assignee ? who(r.assignee) : el("span", { class: "muted" }, "—")),
+      el("td", {}, team(r)),
       closed ? el("td", { class: "num" }, keepPairs(r.age)) : el("td", {}, dueCell(r)),
     )),
   ));
@@ -337,7 +343,7 @@ function openRequest(r) {
     el("dt", {}, "Место"), el("dd", {}, `${r.building_title}, каб. ${r.room}`),
     el("dt", {}, "Проблема"), el("dd", {}, r.description),
     applicant,
-    el("dt", {}, "Исполнитель"), el("dd", {}, r.assignee || "—"),
+    el("dt", {}, (r.assignees || []).length > 1 ? "Исполнители" : "Исполнитель"), el("dd", {}, r.assignee || "—"),
     el("dt", {}, "Создана"), el("dd", {}, r.created_at),
     el("dt", {}, active ? "Висит" : "Время работы"), el("dd", {}, r.age),
   );
@@ -380,13 +386,18 @@ function openRequest(r) {
   }
 
   if (active && can("admin_requests")) {
-    const assignees = state.meta.assignees;
-    const sel = selectInput("assignee", [["", "Выберите исполнителя"], ...assignees.map(a => [a.id, a.name])], r.assignee_id ?? "");
-    body.push(el("div", { class: "section-title" }, "Назначить исполнителя"),
-      row(grow(sel), el("button", { class: "btn", type: "button", onclick: () => {
-        if (!sel.value) return toast("Выберите исполнителя");
-        run(post("assign", { assignee_id: Number(sel.value) }), "Исполнитель назначен");
-      } }, "Назначить")));
+    // Исполнители: можно отметить нескольких
+    const current = new Set((r.assignees || []).map(a => a.id));
+    const boxes = state.meta.assignees.map(a =>
+      el("label", { class: "check" }, el("input", { type: "checkbox", value: a.id, checked: current.has(a.id) }), a.name));
+    body.push(el("div", { class: "section-title" }, "Исполнители"),
+      el("div", { class: "checks" }, ...boxes),
+      el("div", { style: "height:8px" }),
+      el("button", { class: "btn", type: "button", onclick: () => {
+        const ids = boxes.map(b => b.querySelector("input")).filter(i => i.checked).map(i => Number(i.value));
+        if (!ids.length) return toast("Отметьте хотя бы одного исполнителя или верните заявку в очередь");
+        run(post("assign", { assignee_ids: ids }), ids.length > 1 ? "Исполнители назначены" : "Исполнитель назначен");
+      } }, "Сохранить исполнителей"));
 
     const building = selectInput("building", state.meta.buildings.map(b => [b.code, b.title]), r.building);
     const room = el("input", { class: "input", name: "room", value: r.room, maxlength: 20 });

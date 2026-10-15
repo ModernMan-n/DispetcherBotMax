@@ -16,7 +16,7 @@ from maxapi import Bot
 from app import repo, staff
 from app.bot.dispatch import (
     CARD_FORMAT,
-    assignee_link,
+    team_text,
     esc,
     notify_applicant,
     profile_link,
@@ -29,7 +29,7 @@ from app.config import OrgConfig
 from app.db import Database
 from app.formatting import fmt_local
 from app.membership import MembershipChecker
-from app.models import ACTIVE_STATUSES, TRANSITIONS, Assignee, Priority, Request, Status, StatusLog, utcnow
+from app.models import ACTIVE_STATUSES, TRANSITIONS, Assignee, Priority, Request, Status, utcnow
 
 log = logging.getLogger(__name__)
 
@@ -109,16 +109,21 @@ async def change_status(ctx: Ctx, request_id: int, action: str, actor: Assignee)
         req = await _load(s, ctx, request_id)
         if status not in TRANSITIONS[Status(req.status)]:
             raise ActionError("Это действие сейчас недоступно: заявку уже изменили")
-        try:
-            await repo.set_status(
-                s, req, status, changed_by=actor.max_id,
-                assignee_id=actor.id if status == Status.IN_PROGRESS else None,
-            )
-        except repo.TransitionError as e:
-            raise ActionError(str(e)) from e
-        await s.refresh(req, ["assignee"])
-    log.info("Веб: заявка №%s → %s (сотрудник %s)", req.id, status, actor.id)
-    await _after_change(ctx, req, notify=True, actor=actor)
+        # Один из нескольких исполнителей возвращает заявку — снимаем только его
+        left = status == Status.NEW and await repo.leave_team(s, req, actor)
+        if not left:
+            try:
+                await repo.set_status(
+                    s, req, status, changed_by=actor.max_id,
+                    assignee_id=actor.id if status == Status.IN_PROGRESS else None,
+                )
+            except repo.TransitionError as e:
+                raise ActionError(str(e)) from e
+        await s.refresh(req, ["assignee", "team"])
+    log.info("Веб: заявка №%s → %s (сотрудник %s%s)", req.id, status, actor.id, ", снял себя" if left else "")
+    await _after_change(ctx, req, notify=not left, actor=actor)
+    if left:
+        await _tell_applicant(ctx, req, "notify_reassigned", actor, assignees=team_text(req))
     return req
 
 
@@ -152,12 +157,13 @@ async def set_priority(ctx: Ctx, request_id: int, priority: str, actor: Assignee
             return req
         req.priority = new
         await _event(s, req, "priority", f"Приоритет: {PRIORITY_TITLES[old]} → {PRIORITY_TITLES[new]}", actor)
-        assignee_max = req.assignee.max_id if req.assignee else None
+        team_max = [a.max_id for a in req.team if a.max_id and a.max_id != actor.max_id]
     log.info("Веб: заявка №%s, приоритет %s → %s (сотрудник %s)", req.id, old, new, actor.id)
     await _after_change(ctx, req, notify=False)
     await _tell_applicant(ctx, req, "notify_priority", actor, priority=PRIORITY_TITLES[new])
-    if new in (Priority.URGENT, Priority.HIGH) and assignee_max and assignee_max != actor.max_id:
-        await _tell(ctx, assignee_max, f"Заявке №{req.id} поставлен {PRIORITY_TITLES[new]} приоритет.")
+    if new in (Priority.URGENT, Priority.HIGH):
+        for max_id in team_max:
+            await _tell(ctx, max_id, f"Заявке №{req.id} поставлен {PRIORITY_TITLES[new]} приоритет.")
     return req
 
 
@@ -191,7 +197,7 @@ async def set_due(
         if comment.strip():
             text += f". Причина: {comment.strip()[:300]}"
         await _event(s, req, "due", text, actor)
-        assignee_max = req.assignee.max_id if req.assignee else None
+        team_max = [a.max_id for a in req.team if a.max_id and a.max_id != actor.max_id]
     log.info("Веб: заявка №%s, срок → %s (сотрудник %s)", req.id, new, actor.id)
     await _after_change(ctx, req, notify=False)
     reason = comment.strip()[:300]
@@ -201,43 +207,63 @@ async def set_due(
                               reason=esc(reason))
     else:
         await _tell_applicant(ctx, req, "notify_due", actor, due=fmt_local(new, ctx.org.timezone))
-    if assignee_max and assignee_max != actor.max_id:
-        text = f"Срок по заявке №{req.id} изменён: до {fmt_local(new, ctx.org.timezone)}."
-        await _tell(ctx, assignee_max, f"{text} Причина: {reason}" if reason else text)
+    text = f"Срок по заявке №{req.id} изменён: до {fmt_local(new, ctx.org.timezone)}."
+    for max_id in team_max:
+        await _tell(ctx, max_id, f"{text} Причина: {reason}" if reason else text)
     return req
 
 
-async def assign(ctx: Ctx, request_id: int, assignee_id: int, actor: Assignee) -> Request:
-    """Назначить исполнителя: новая заявка уходит в работу, у взятой меняется исполнитель."""
+async def assign(ctx: Ctx, request_id: int, assignee_ids: list[int], actor: Assignee) -> Request:
+    """Назначить исполнителей (одного или нескольких). Новая заявка уходит в работу.
+
+    Состав заменяется целиком: добавленные получают уведомление и карточку, снятые — уведомление.
+    """
+    ids = list(dict.fromkeys(assignee_ids))
+    if not ids:
+        raise ActionError("Выберите хотя бы одного исполнителя — или верните заявку в очередь")
     async with ctx.db.session() as s, s.begin():
         req = await _load(s, ctx, request_id)
-        target = await staff.get_specialist_by_id(s, ctx.org.org_id, assignee_id)
-        if target is None or not target.active or not target.works_requests:
-            raise ActionError("Этому сотруднику нельзя назначить заявку")
-        status = Status(req.status)
         _require_active(req)
+        targets = []
+        for aid in ids:
+            t = await staff.get_specialist_by_id(s, ctx.org.org_id, aid)
+            if t is None or not t.active or not t.works_requests:
+                raise ActionError("Одному из выбранных сотрудников нельзя назначить заявку")
+            targets.append(t)
+        status = Status(req.status)
+        before = {a.id: a for a in req.team}
+        if set(before) == set(ids):
+            raise ActionError("Состав исполнителей не изменился")
         if status == Status.NEW:
             try:
-                await repo.set_status(s, req, Status.IN_PROGRESS, changed_by=actor.max_id, assignee_id=target.id)
+                await repo.set_status(s, req, Status.IN_PROGRESS, changed_by=actor.max_id, assignee_id=ids[0])
             except repo.TransitionError as e:
                 raise ActionError(str(e)) from e
-        else:
-            if req.assignee_id == target.id:
-                raise ActionError("Заявка уже у этого исполнителя")
-            req.assignee_id = target.id
-            req.taken_at = utcnow()
-            req.log.append(StatusLog(status=Status.IN_PROGRESS, changed_by=actor.max_id))
-        await _event(s, req, "assign", f"Назначен исполнитель: {target.name}", actor)
-        await s.refresh(req, ["assignee"])
-        target_max_id = target.max_id
-    log.info("Веб: заявка №%s назначена сотруднику %s (назначил %s)", req.id, assignee_id, actor.id)
+        await repo.set_team(s, req, ids)
+        added = [t for t in targets if t.id not in before]
+        removed = [a for aid, a in before.items() if aid not in ids]
+        changes = []
+        if added:
+            changes.append("назначены: " + ", ".join(a.name for a in added))
+        if removed:
+            changes.append("сняты: " + ", ".join(a.name for a in removed))
+        await _event(s, req, "assign", "Исполнители — " + "; ".join(changes), actor)
+        added_max = [(a.max_id, [o.name for o in targets if o.id != a.id]) for a in added if a.max_id]
+        removed_max = [a.max_id for a in removed if a.max_id]
+    log.info("Веб: заявка №%s, исполнители %s (назначил %s)", req.id, ids, actor.id)
     await _after_change(ctx, req, notify=status == Status.NEW, actor=actor)
     if status != Status.NEW:
-        # Заявка уже была в работе — сменился исполнитель
-        await _tell_applicant(ctx, req, "notify_reassigned", actor, assignee=assignee_link(req))
-    if ctx.bot is not None and target_max_id is not None:
-        await _tell(ctx, target_max_id, f"Вам назначена заявка №{req.id}.")
-        await send_card(ctx.bot, ctx.db, ctx.org, req, user_id=target_max_id)
+        await _tell_applicant(ctx, req, "notify_reassigned", actor, assignees=team_text(req))
+    for max_id, others in added_max:
+        if max_id == actor.max_id:
+            continue
+        together = f" Вместе с вами: {', '.join(others)}." if others else ""
+        await _tell(ctx, max_id, f"Вам назначена заявка №{req.id}.{together}")
+        if ctx.bot is not None:
+            await send_card(ctx.bot, ctx.db, ctx.org, req, user_id=max_id)
+    for max_id in removed_max:
+        if max_id != actor.max_id:
+            await _tell(ctx, max_id, f"Вас сняли с заявки №{req.id}.")
     return req
 
 

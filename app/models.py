@@ -171,7 +171,11 @@ class Request(Base):
     # Срок задан вручную — тогда при смене категории не пересчитывается
     due_manual: Mapped[bool] = mapped_column(Boolean, default=False, server_default=sa_text("0"))
 
+    # Первый (основной) исполнитель; вся команда — в team. assignee_id всегда = team[0].id
     assignee: Mapped[Assignee | None] = relationship(lazy="selectin")
+    team: Mapped[list[Assignee]] = relationship(
+        secondary="request_assignees", order_by="RequestAssignee.added_at", lazy="selectin", viewonly=True,
+    )
     log: Mapped[list[StatusLog]] = relationship(
         back_populates="request", order_by="StatusLog.changed_at", lazy="selectin"
     )
@@ -258,3 +262,13 @@ class RequestEvent(Base):
     text: Mapped[str] = mapped_column(Text)  # что изменилось, для людей
     actor_id: Mapped[int | None] = mapped_column(ForeignKey("assignees.id"))
     actor_name: Mapped[str | None] = mapped_column(String(128))
+
+
+class RequestAssignee(Base):
+    """Исполнители заявки: их может быть несколько (назначает диспетчер)."""
+
+    __tablename__ = "request_assignees"
+
+    request_id: Mapped[int] = mapped_column(ForeignKey("requests.id", ondelete="CASCADE"), primary_key=True)
+    assignee_id: Mapped[int] = mapped_column(ForeignKey("assignees.id"), primary_key=True, index=True)
+    added_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
