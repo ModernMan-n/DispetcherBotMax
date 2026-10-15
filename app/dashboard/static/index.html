@@ -25,8 +25,8 @@
       </div>
     </div>
     <nav class="nav">
-      <div class="nav-title">Аналитика</div>
-      <a href="#overview" data-page="overview">
+      <div class="nav-title" data-perm="analytics">Аналитика</div>
+      <a href="#overview" data-page="overview" data-perm="analytics">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M8 17v-5M12 17V8M16 17v-3"/></svg>
         <span>Обзор</span>
       </a>
@@ -107,7 +107,8 @@
       <div class="toolbar">
         <div class="tabs" role="tablist" id="req-tabs">
           <button role="tab" data-scope="active">Активные</button>
-          <button role="tab" data-scope="mine" data-perm="work">Мои</button>
+          <button role="tab" data-scope="direction" data-perm="work">Моих направлений</button>
+          <button role="tab" data-scope="mine" data-perm="work">Взятые мной</button>
           <button role="tab" data-scope="closed">Закрытые</button>
         </div>
         <span class="card-sub" id="req-total"></span>

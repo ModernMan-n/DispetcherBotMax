@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 
 from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Index, String, Text, TypeDecorator
@@ -181,6 +181,12 @@ class Request(Base):
         Index("ix_requests_org_applicant", "org_id", "applicant_max_id"),
         Index("ix_requests_org_created", "org_id", "created_at"),
     )
+
+    def work_time(self) -> timedelta | None:
+        """Время выполнения: от назначения исполнителя (взял или назначили) до «Готово»."""
+        if self.closed_at is None or self.taken_at is None:
+            return None
+        return self.closed_at - self.taken_at
 
     def is_overdue(self, now: datetime) -> bool:
         return self.status in ACTIVE_STATUSES and self.due_at is not None and now > self.due_at

@@ -299,3 +299,36 @@ async def test_demo_db_is_open_read_only(tmp_path, monkeypatch):
             assert me["role"] == "viewer" and me["demo"] is True
             assert (await c.get("/api/stats")).status_code == 200
             assert (await c.post("/api/requests/1/action", json={"action": "take"})).status_code == 403
+
+
+# --- что видит специалист ---
+
+
+async def test_specialist_visibility(web):
+    org = web.org
+    async with web.db.session() as s, s.begin():
+        # №2 — закрыта, чужое направление (мебель); №3 — закрыта, его направление (сеть)
+        for cat in ("furniture", "network"):
+            r = await repo.create_request(s, org_id=org.org_id, building="1", room="1", description="Закрытая заявка",
+                                          category=cat, applicant_max_id=7, applicant_name="Х")
+            await repo.set_status(s, r, Status.IN_PROGRESS, changed_by=1)
+            await repo.set_status(s, r, Status.DONE, changed_by=1)
+        # №4 — открыта, чужое направление: открытые видны все
+        await repo.create_request(s, org_id=org.org_id, building="1", room="1", description="Сломан стул",
+                                  category="furniture", applicant_max_id=7, applicant_name="Х")
+
+    async with await login(web, SPEC_PHONE, SPEC_MAX) as c:
+        assert (await c.get("/api/stats")).status_code == 403  # аналитика — не для специалиста
+        assert "analytics" not in (await c.get("/api/me")).json()["perms"]
+        active = {i["id"] for i in (await c.get("/api/requests?scope=active")).json()["items"]}
+        assert active == {1, 4}
+        closed = {i["id"] for i in (await c.get("/api/requests?scope=closed")).json()["items"]}
+        assert closed == {3}
+        direction = {i["id"] for i in (await c.get("/api/requests?scope=direction")).json()["items"]}
+        assert direction == {1}
+        assert (await c.get("/api/requests/2/history")).status_code == 404
+        assert (await c.get("/api/requests/3/history")).status_code == 200
+
+    async with await login(web, VIEWER_PHONE, VIEWER_MAX) as c:  # руководство видит всё
+        assert {i["id"] for i in (await c.get("/api/requests?scope=closed")).json()["items"]} == {2, 3}
+        assert (await c.get("/api/stats")).status_code == 200

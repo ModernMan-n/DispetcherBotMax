@@ -25,7 +25,9 @@ SESSION_TTL = timedelta(days=7)
 
 
 class Perm(StrEnum):
-    VIEW = "view"  # аналитика и список заявок
+    VIEW = "view"  # список заявок (специалисту — только видимые ему, см. VIEW_ALL)
+    ANALYTICS = "analytics"  # «Обзор»: показатели, исполнители, просроченные
+    VIEW_ALL = "view_all"  # все заявки, включая чужие закрытые
     WORK = "work"  # взять, закрыть, вернуть, отменить, сменить категорию
     ADMIN_REQUESTS = "admin_requests"  # назначить, править заявку, срок, приоритет
     MANAGE_CATEGORIES = "manage_categories"  # категории: добавить, изменить, отключить
@@ -33,9 +35,12 @@ class Perm(StrEnum):
 
 
 ROLE_PERMS: dict[Role, frozenset[Perm]] = {
-    Role.VIEWER: frozenset({Perm.VIEW}),
+    Role.VIEWER: frozenset({Perm.VIEW, Perm.ANALYTICS, Perm.VIEW_ALL}),
+    # Специалист: все открытые заявки, а закрытые — только своих направлений или взятые им
     Role.SPECIALIST: frozenset({Perm.VIEW, Perm.WORK}),
-    Role.DISPATCHER: frozenset({Perm.VIEW, Perm.WORK, Perm.ADMIN_REQUESTS, Perm.MANAGE_CATEGORIES}),
+    Role.DISPATCHER: frozenset({
+        Perm.VIEW, Perm.ANALYTICS, Perm.VIEW_ALL, Perm.WORK, Perm.ADMIN_REQUESTS, Perm.MANAGE_CATEGORIES,
+    }),
     Role.ADMIN: frozenset(Perm),
 }
 

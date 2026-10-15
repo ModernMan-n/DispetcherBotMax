@@ -154,13 +154,16 @@ def build_staff_router(org: OrgConfig, db: Database) -> Router:
         log.info("Специалист %s: на линии = %s", a.id, a.on_duty)
         await event.edit(text=status_text(org, a), attachments=[ui.main_menu(a)])
 
-    @router.message_callback(StaffAction.filter(F.name.in_({"mine", "all"})))
+    @router.message_callback(StaffAction.filter(F.name.in_({"taken", "mine", "all"})))
     async def on_list(event: MessageCallback, payload: StaffAction):
         a = await require_specialist(event)
         if a is None:
             return
         async with db.session() as s:
-            if payload.name == "mine":
+            if payload.name == "taken":
+                items = await staff.list_active_requests(s, org.org_id, assignee_id=a.id)
+                title = "Взятые вами заявки"
+            elif payload.name == "mine":
                 items = await staff.list_active_requests(s, org.org_id, a.direction_codes)
                 title = "Активные заявки ваших направлений"
             else:

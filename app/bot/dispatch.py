@@ -118,7 +118,8 @@ def render_card(org: OrgConfig, req: Request) -> str:
         status_line += f" — {esc(req.assignee.name)}, с {local(req.taken_at)}"
     elif status == Status.DONE:
         who = f" — {esc(req.assignee.name)}" if req.assignee else ""
-        status_line += f"{who}, за {format_duration(req.closed_at - req.created_at)}"
+        work = req.work_time()
+        status_line += f"{who}, за {format_duration(work)} работы" if work is not None else who
     lines.append(status_line)
     return "\n".join(lines)
 

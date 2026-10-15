@@ -123,11 +123,14 @@ async def link_by_phone(s: AsyncSession, org_id: str, phone: str, max_id: int) -
 
 
 async def list_active_requests(
-    s: AsyncSession, org_id: str, categories: list[str] | None = None, limit: int = 20
+    s: AsyncSession, org_id: str, categories: list[str] | None = None, limit: int = 20,
+    assignee_id: int | None = None,
 ) -> list[Request]:
     q = select(Request).where(Request.org_id == org_id, Request.status.in_(ACTIVE_STATUSES))
     if categories is not None:
         q = q.where(Request.category.in_(categories))
+    if assignee_id is not None:
+        q = q.where(Request.assignee_id == assignee_id)
     return list(await s.scalars(q.order_by(*priority_order()).limit(limit)))
 
 

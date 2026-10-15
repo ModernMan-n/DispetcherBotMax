@@ -118,8 +118,8 @@ function renderOverview(d) {
       sub: p.on_time_pct != null ? `в срок ${p.on_time_pct}% · ${c.done == null ? noPrev : vs}` : vs }),
     kpiCard({ label: "Время до взятия", value: p.avg_take ?? "—", change: c.avg_take, upIs: "bad",
       sub: c.avg_take == null ? noPrev : `в среднем, ${vs}` }),
-    kpiCard({ label: "Время до закрытия", value: p.avg_close ?? "—", change: c.avg_close, upIs: "bad",
-      sub: c.avg_close == null ? noPrev : `в среднем, ${vs}` }),
+    kpiCard({ label: "Время выполнения", value: p.avg_close ?? "—", change: c.avg_close, upIs: "bad",
+      sub: c.avg_close == null ? "от назначения до «Готово»" : `от назначения до «Готово», ${vs}` }),
   );
 
   const n = d.now;
@@ -139,7 +139,7 @@ function renderOverview(d) {
   } else {
     const max = Math.max(1, ...d.assignees.map(a => a.done));
     $("assignees").replaceChildren(table(
-      [["Исполнитель"], ["Закрыто", "num"], ["В работе", "num"], ["Ср. время закрытия", "num"], ["В срок", "num"]],
+      [["Исполнитель"], ["Закрыто", "num"], ["В работе", "num"], ["Ср. время выполнения", "num"], ["В срок", "num"]],
       d.assignees.map(a => {
         const meter = el("span", { class: "meter" }, el("b"));
         meter.firstChild.style.width = `${(a.done / max) * 100}%`;
@@ -234,7 +234,10 @@ function renderRequests() {
   document.querySelectorAll("#req-tabs button").forEach(b =>
     b.setAttribute("aria-selected", String(b.dataset.scope === state.scope)));
   if (!requestsCache.length) {
-    const empty = { active: "Активных заявок нет", mine: "У вас нет заявок в работе", closed: "Закрытых заявок нет" };
+    const empty = {
+      active: "Активных заявок нет", mine: "У вас нет заявок в работе",
+      direction: "По вашим направлениям активных заявок нет", closed: "Закрытых заявок нет",
+    };
     $("requests").replaceChildren(el("div", { class: "empty" }, empty[state.scope]));
     return;
   }
@@ -242,7 +245,7 @@ function renderRequests() {
   const showApplicant = can("work");
   const head = [["№"], ["Создана"], ["Категория"], ["Место"], ["Проблема"]];
   if (showApplicant) head.push(["Заявитель"]);
-  head.push(["Статус"], ["Исполнитель"], closed ? ["Выполнена за", "num"] : ["Срок"]);
+  head.push(["Статус"], ["Исполнитель"], closed ? ["Время работы", "num"] : ["Срок"]);
   $("requests").replaceChildren(table(head,
     requestsCache.map(r => el("tr", {
       class: "clickable", tabindex: 0,
@@ -336,7 +339,7 @@ function openRequest(r) {
     applicant,
     el("dt", {}, "Исполнитель"), el("dd", {}, r.assignee || "—"),
     el("dt", {}, "Создана"), el("dd", {}, r.created_at),
-    el("dt", {}, active ? "Висит" : "Выполнена за"), el("dd", {}, r.age),
+    el("dt", {}, active ? "Висит" : "Время работы"), el("dd", {}, r.age),
   );
   const body = [facts];
 
@@ -624,15 +627,17 @@ async function deleteCategory() {
 // ================= Навигация и запуск =================
 
 const PAGES = {
-  overview: { title: "Обзор", load: loadOverview },
+  overview: { title: "Обзор", load: loadOverview, perm: "analytics" },
   requests: { title: "Заявки", load: loadRequests },
   categories: { title: "Категории", load: loadCategories, perm: "manage_categories" },
   staff: { title: "Сотрудники", load: loadStaff, perm: "manage_staff" },
 };
 
 function route() {
-  let page = location.hash.slice(1) || "overview";
-  if (!PAGES[page] || (PAGES[page].perm && !can(PAGES[page].perm))) page = "overview";
+  // Специалисту аналитика недоступна — его стартовая страница «Заявки»
+  const home = can("analytics") ? "overview" : "requests";
+  let page = location.hash.slice(1) || home;
+  if (!PAGES[page] || (PAGES[page].perm && !can(PAGES[page].perm))) page = home;
   state.page = page;
   for (const name of Object.keys(PAGES)) $(`page-${name}`).hidden = name !== page;
   $("page-title").textContent = PAGES[page].title;

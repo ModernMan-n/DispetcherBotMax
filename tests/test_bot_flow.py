@@ -97,7 +97,7 @@ async def test_take_and_done_notify_applicant(h, db, org):
     assert h.to_user(100)[-1]["text"] == org.text("notify_in_progress", id=1)
 
     await h.press_in_chat("r|done|1")
-    assert "Выполнена — Пётр Мастер, за" in h.last_edit.text
+    assert "Выполнена — Пётр Мастер, за" in h.last_edit.text and "работы" in h.last_edit.text
     assert buttons_of(h.last_edit.attachments) == []
     assert h.to_user(100)[-1]["text"] == org.text("notify_done", id=1)
 

@@ -71,7 +71,8 @@ def _flow(rows: list[Request], lo: datetime, hi: datetime, sla: dict[str, timede
         "on_time": on_time,
         "cancelled": sum(r.status == Status.CANCELLED and inside(r.closed_at) for r in rows),
         "avg_take_min": _Durations([_minutes(r.taken_at - r.created_at) for r in taken]).avg,
-        "avg_close_min": _Durations([_minutes(r.closed_at - r.created_at) for r in done]).avg,
+        # Время выполнения — от назначения исполнителя до «Готово», не от подачи заявки
+        "avg_close_min": _Durations([_minutes(r.work_time()) for r in done if r.work_time() is not None]).avg,
     }
 
 
@@ -115,7 +116,8 @@ async def collect(s: AsyncSession, org: OrgConfig, days: int, now: datetime | No
         a = per_assignee[r.assignee.id]
         a["name"] = r.assignee.name
         a["done"] += 1
-        a["close_minutes"].append(_minutes(r.closed_at - r.created_at))
+        if r.work_time() is not None:
+            a["close_minutes"].append(_minutes(r.work_time()))
         a["on_time"] += r.id in on_time
     for r in active:
         if r.status == Status.IN_PROGRESS and r.assignee is not None:

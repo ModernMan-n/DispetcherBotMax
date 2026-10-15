@@ -11,7 +11,7 @@ from maxapi.utils.inline_keyboard import InlineKeyboardBuilder
 
 from app.bot.dispatch import Card
 from app.config import OrgConfig
-from app.models import Assignee
+from app.models import Assignee, Role
 
 
 class NewRequest(StatesGroup):
@@ -30,12 +30,13 @@ class BuildingChoice(CallbackPayload, prefix="b"):
 
 
 class StaffAction(CallbackPayload, prefix="s"):
-    name: str  # mine | all | duty_on | duty_off
+    name: str  # taken | mine | all | duty_on | duty_off
 
 
 def main_menu(specialist: Assignee | None = None):
     kb = InlineKeyboardBuilder()
     if specialist is not None:
+        kb.row(CallbackButton(text="Взятые мной", payload=StaffAction(name="taken").pack()))
         kb.row(CallbackButton(text="Заявки моих направлений", payload=StaffAction(name="mine").pack()))
         kb.row(CallbackButton(text="Все активные заявки", payload=StaffAction(name="all").pack()))
         if specialist.on_duty:
@@ -44,10 +45,12 @@ def main_menu(specialist: Assignee | None = None):
             kb.row(CallbackButton(
                 text="Выйти на линию", payload=StaffAction(name="duty_on").pack(), intent=Intent.POSITIVE
             ))
-        kb.row(
-            CallbackButton(text="Новая заявка", payload=Action(name="new").pack()),
-            CallbackButton(text="Мои заявки", payload=Action(name="my").pack()),
-        )
+        if specialist.role != Role.SPECIALIST:
+            # Диспетчер и администратор могут и подавать заявки; специалист — только выполняет
+            kb.row(
+                CallbackButton(text="Новая заявка", payload=Action(name="new").pack()),
+                CallbackButton(text="Мои заявки", payload=Action(name="my").pack()),
+            )
     else:
         kb.row(CallbackButton(text="Новая заявка", payload=Action(name="new").pack(), intent=Intent.POSITIVE))
         kb.row(CallbackButton(text="Мои заявки", payload=Action(name="my").pack()))

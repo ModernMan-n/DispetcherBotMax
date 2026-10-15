@@ -20,7 +20,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from maxapi import Bot
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select, true
 from sqlalchemy.engine import make_url
 
 from app import actions, auth, categories, repo, staff, stats
@@ -268,7 +268,7 @@ async def me(user: Assignee = Depends(current_user)) -> dict:
 
 
 @app.get("/api/stats")
-async def api_stats(days: int = Query(30, ge=1, le=365), user: Assignee = Depends(require(Perm.VIEW))) -> dict:
+async def api_stats(days: int = Query(30, ge=1, le=365), user: Assignee = Depends(require(Perm.ANALYTICS))) -> dict:
     async with app.state.db.session() as s:
         data = await stats.collect(s, app.state.org, days)
     data["demo"] = app.state.demo
@@ -300,6 +300,20 @@ async def meta(user: Assignee = Depends(require(Perm.VIEW))) -> dict:
     }
 
 
+def visible_to(user: Assignee):
+    """Условие видимости заявки. Специалист: открытые — все; закрытые — своих направлений или взятые им."""
+    if Perm.VIEW_ALL in auth.perms_of(user):
+        return true()
+    return or_(Req.status.in_(ACTIVE_STATUSES), Req.category.in_(user.direction_codes), Req.assignee_id == user.id)
+
+
+async def visible_request(s, request_id: int, user: Assignee) -> Req:
+    req = await s.scalar(select(Req).where(Req.org_id == app.state.org.org_id, Req.id == request_id, visible_to(user)))
+    if req is None:
+        raise HTTPException(404, "Заявка не найдена")
+    return req
+
+
 def request_row(r: Req, user: Assignee, now: datetime) -> dict:
     org = app.state.org
     tz = ZoneInfo(org.timezone)
@@ -317,7 +331,9 @@ def request_row(r: Req, user: Assignee, now: datetime) -> dict:
         "status": r.status,
         "assignee_id": r.assignee_id,
         "assignee": r.assignee.name if r.assignee else None,
-        "age": format_duration(age if r.closed_at is None else r.closed_at - r.created_at),
+        # Активная — сколько висит; закрытая — время выполнения (от назначения до «Готово»)
+        "age": format_duration(age) if r.closed_at is None
+        else (format_duration(r.work_time()) if r.work_time() is not None else "—"),
         "overdue": r.is_overdue(now),
         "priority": r.priority,
         "priority_title": actions.PRIORITY_TITLES[Priority(r.priority)],
@@ -335,7 +351,7 @@ def request_row(r: Req, user: Assignee, now: datetime) -> dict:
 
 @app.get("/api/requests")
 async def list_requests(
-    scope: str = Query("active", pattern="^(active|mine|closed)$"),
+    scope: str = Query("active", pattern="^(active|mine|direction|closed)$"),
     limit: int = Query(200, ge=1, le=500),
     user: Assignee = Depends(require(Perm.VIEW)),
 ) -> dict:
@@ -344,8 +360,11 @@ async def list_requests(
         q = q.where(Req.status.in_(ACTIVE_STATUSES)).order_by(*staff.priority_order())
     elif scope == "mine":
         q = q.where(Req.status.in_(ACTIVE_STATUSES), Req.assignee_id == user.id).order_by(*staff.priority_order())
+    elif scope == "direction":
+        q = q.where(Req.status.in_(ACTIVE_STATUSES), Req.category.in_(user.direction_codes)) \
+            .order_by(*staff.priority_order())
     else:
-        q = q.where(Req.status.not_in(ACTIVE_STATUSES)).order_by(Req.closed_at.desc())
+        q = q.where(Req.status.not_in(ACTIVE_STATUSES), visible_to(user)).order_by(Req.closed_at.desc())
     async with app.state.db.session() as s:
         rows = list(await s.scalars(q.limit(limit)))
         total = await s.scalar(select(func.count()).select_from(q.order_by(None).subquery()))
@@ -441,9 +460,7 @@ async def request_history(request_id: int, user: Assignee = Depends(require(Perm
     """История заявки: смены статуса и изменения (срок, приоритет, правка, категория, назначение)."""
     org = app.state.org
     async with app.state.db.session() as s:
-        req = await repo.get_request(s, org.org_id, request_id)
-        if req is None:
-            raise HTTPException(404, "Заявка не найдена")
+        req = await visible_request(s, request_id, user)
         events = await repo.request_events(s, request_id)
         names = {a.max_id: a.name for a in await staff.list_specialists(s, org.org_id) if a.max_id}
     status_titles = {"new": "Создана", "in_progress": "Взята в работу", "done": "Выполнена", "cancelled": "Отменена"}
@@ -461,6 +478,8 @@ async def request_history(request_id: int, user: Assignee = Depends(require(Perm
 @app.post("/api/requests/{request_id}/contact")
 async def request_contact(request_id: int, user: Assignee = Depends(require(Perm.WORK))) -> dict:
     """Прислать мне в MAX ссылку на профиль заявителя (в браузере max:// обычно не открывается)."""
+    async with app.state.db.session() as s:
+        await visible_request(s, request_id, user)
     try:
         await actions.contact_applicant(ctx(), request_id, user)
     except actions.ActionError as e:

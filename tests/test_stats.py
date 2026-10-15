@@ -49,7 +49,8 @@ async def test_metrics(db, org):
     p = d["period"]
     assert (p["created"], p["done"], p["cancelled"]) == (4, 2, 0)
     assert p["avg_take_min"] == 20.0
-    assert p["avg_close_min"] == 360.0 and p["avg_close"] == "6 ч"
+    # Время выполнения — от взятия до «Готово»: 1 ч 50 мин и 9 ч 30 мин → в среднем 5 ч 40 мин
+    assert p["avg_close_min"] == 340.0 and p["avg_close"] == "5 ч 40 мин"
     assert p["on_time_pct"] == 50
 
     [a] = d["assignees"]

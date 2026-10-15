@@ -21,7 +21,7 @@ from app.categorizer import Categorizer
 from app.config import OrgConfig
 from app.db import Database
 from app.membership import MembershipChecker
-from app.models import Status
+from app.models import Role, Status
 
 log = logging.getLogger(__name__)
 
@@ -70,11 +70,25 @@ def build_router(
             specialist = await staff.get_specialist(s, org.org_id, user_id)
         return ui.main_menu(specialist)
 
+    async def greeting(user_id: int) -> str:
+        if await is_specialist(user_id):
+            return org.text("specialist_welcome")
+        return welcome_text()
+
     def welcome_text() -> str:
         return f"{org.text('welcome')}\n\n{org.text('privacy')}"
 
-    async def start_flow(context: BaseContext, send) -> None:
+    async def is_specialist(user_id: int) -> bool:
+        """Специалист (не диспетчер и не админ) заявки не подаёт — только выполняет."""
+        async with db.session() as s:
+            a = await staff.get_specialist(s, org.org_id, user_id)
+        return a is not None and a.role == Role.SPECIALIST
+
+    async def start_flow(context: BaseContext, send, user_id: int) -> None:
         await context.clear()
+        if await is_specialist(user_id):
+            await send(text=org.text("specialist_no_requests"), attachments=[await menu(user_id)])
+            return
         await context.set_state(NewRequest.building)
         await send(text=org.text("ask_building"), attachments=[ui.buildings_keyboard(org)])
 
@@ -94,18 +108,20 @@ def build_router(
     @router.bot_started()
     async def on_bot_started(event: BotStarted, context: BaseContext):
         await context.clear()
+        user_id = event.user.user_id
         await event.bot.send_message(
-            chat_id=event.chat_id, text=welcome_text(), attachments=[await menu(event.user.user_id)]
+            chat_id=event.chat_id, text=await greeting(user_id), attachments=[await menu(user_id)]
         )
 
     @router.message_created(CommandStart())
     async def on_start(event: MessageCreated, context: BaseContext):
         await context.clear()
-        await event.message.answer(text=welcome_text(), attachments=[await menu(event.message.sender.user_id)])
+        user_id = event.message.sender.user_id
+        await event.message.answer(text=await greeting(user_id), attachments=[await menu(user_id)])
 
     @router.message_created(Command(["new", "zayavka"]))
     async def on_new_command(event: MessageCreated, context: BaseContext):
-        await start_flow(context, event.message.answer)
+        await start_flow(context, event.message.answer, event.message.sender.user_id)
 
     @router.message_created(Command(["cancel", "otmena"]))
     async def on_cancel_command(event: MessageCreated, context: BaseContext):
@@ -123,7 +139,7 @@ def build_router(
     @router.message_callback(Action.filter(F.name == "new"))
     async def on_new_button(event: MessageCallback, context: BaseContext):
         await close_buttons(event)
-        await start_flow(context, event.send)
+        await start_flow(context, event.send, event.callback.user.user_id)
 
     @router.message_callback(Action.filter(F.name == "my"))
     async def on_my_button(event: MessageCallback):

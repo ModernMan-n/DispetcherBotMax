@@ -208,3 +208,43 @@ async def test_deactivated_specialist_loses_access(h, db, org, specialists):
 
 def test_chat_constant_is_group():
     assert DISPATCH_CHAT_ID < 0
+
+
+# --- специалист не подаёт заявки ---
+
+
+async def test_specialist_cannot_create_requests(h, org, specialists):
+    await login(h, WORKER, NET_PHONE)
+    await h.text("/start", user=WORKER)
+    assert h.last_text == org.text("specialist_welcome")
+    assert "a|new" not in h.last_buttons() and "s|taken" in h.last_buttons()
+
+    await h.text("/new", user=WORKER)
+    assert h.last_text == org.text("specialist_no_requests")
+    await h.press("a|new", user=WORKER)
+    assert h.last_text == org.text("specialist_no_requests")
+    # Текст после отказа не превращается в заявку
+    await h.text("214", user=WORKER)
+    assert h.last_text != org.text("ask_description")
+
+
+async def test_dispatcher_can_still_create_requests(h, db, org, specialists):
+    async with db.session() as s, s.begin():
+        a = await staff.get_specialist_by_id(s, org.org_id, specialists[0].id)
+        a.role = "dispatcher"
+    await login(h, WORKER, NET_PHONE)
+    await h.text("/start", user=WORKER)
+    assert "a|new" in h.last_buttons()
+    await h.press("a|new", user=WORKER)
+    assert h.last_text == org.text("ask_building")
+
+
+async def test_taken_by_me_list(h, specialists):
+    await login(h, WORKER, NET_PHONE)
+    await h.submit_request("Нет интернета в кабинете")  # №1
+    await h.submit_request("Нет интернета в библиотеке")  # №2
+    await h.press("r|take|2", user=WORKER, mid=next(
+        m["mid"] for m in h.to_user(WORKER["user_id"]) if m["text"].startswith("Заявка №2")))
+    await h.press("s|taken", user=WORKER)
+    lists = [m for m in h.in_dialog() if "Взятые вами заявки" in m["text"]]
+    assert "№2" in lists[-1]["text"] and "№1" not in lists[-1]["text"]
