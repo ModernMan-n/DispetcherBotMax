@@ -8,3 +8,4 @@ data/*.db-*
 data/bot.lock
 data/*.log
 data/backup/
+/instructions/

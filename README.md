@@ -116,3 +116,13 @@ uv run alembic current                                         # текущая 
 ## Переход на PostgreSQL
 
 Поменять `DATABASE_URL` на `postgresql+asyncpg://…`, установить `asyncpg` и выполнить `uv run alembic upgrade head`.
+
+## Инструкции для пользователей (PDF)
+
+Три инструкции — для сотрудников (как оставить заявку), специалистов и диспетчера (с разделом для администратора). Собираются из `docs/instructions/build.py`; адрес дашборда и ссылка на бота подставляются при сборке:
+
+```bash
+uv run python docs/instructions/build.py --dashboard https://адрес-дашборда --bot https://max.ru/имя_бота
+```
+
+PDF появятся в папке `instructions/` (в git не попадает). Скриншоты в `docs/instructions/img/` сняты на демо-данных — после заметных изменений интерфейса их стоит переснять.
