@@ -1,5 +1,6 @@
-# HTTPS для домена: сертификат Let's Encrypt Caddy получает и продлевает сам.
-{$DOMAIN} {
+# HTTPS для домена: сертификат Let's Encrypt Caddy получает и продлевает сам (через порт 80).
+# HTTPS_PORT — 443 по умолчанию; другой, если 443 на сервере занят (например, VPN).
+{$DOMAIN}:{$HTTPS_PORT} {
 	encode gzip
 
 	# События MAX → бот

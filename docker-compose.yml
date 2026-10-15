@@ -26,7 +26,8 @@ services:
     command: ["python", "-m", "app.bot"]
     environment:
       <<: *app-env
-      BOT_MODE: webhook
+      # webhook — если Caddy на 443; polling — если 443 занят (бот сам ходит в MAX, порты не нужны)
+      BOT_MODE: ${BOT_MODE:-webhook}
     depends_on:
       migrate: { condition: service_completed_successfully }
 
@@ -49,10 +50,11 @@ services:
     image: caddy:2.8.4
     restart: unless-stopped
     ports:
-      - "80:80"
-      - "443:443"
+      - "80:80"  # нужен для выпуска сертификата
+      - "${HTTPS_PORT:-443}:${HTTPS_PORT:-443}"
     environment:
       DOMAIN: ${DOMAIN:?Укажите DOMAIN в .env}
+      HTTPS_PORT: ${HTTPS_PORT:-443}
     volumes:
       - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
