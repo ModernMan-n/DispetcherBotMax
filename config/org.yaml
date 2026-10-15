@@ -90,3 +90,4 @@ texts:
   notify_cancelled: "Заявка №{id} отменена диспетчерской."
   notify_priority: "Приоритет заявки №{id} изменён: {priority}."
   notify_due: "Срок выполнения заявки №{id} изменён: до {due}."
+  notify_due_reason: "Срок выполнения заявки №{id} изменён: до {due}. Причина: {reason}"

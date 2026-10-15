@@ -352,7 +352,7 @@ function openRequest(r) {
 
     // Срок
     const dueInput = el("input", { class: "input", type: "datetime-local", value: r.due_iso || "" });
-    const comment = el("input", { class: "input", placeholder: "Причина (необязательно)", maxlength: 300 });
+    const comment = el("input", { class: "input", placeholder: "Причина — её увидят заявитель и исполнитель", maxlength: 300 });
     const shift = hours => run(post("due", { shift_hours: hours, comment: comment.value }), "Срок перенесён");
     body.push(el("div", { class: "section-title" }, "Срок выполнения"),
       row(

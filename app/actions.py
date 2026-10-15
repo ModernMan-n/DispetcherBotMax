@@ -17,6 +17,7 @@ from app import repo, staff
 from app.bot.dispatch import (
     CARD_FORMAT,
     assignee_link,
+    esc,
     notify_applicant,
     profile_link,
     send_card,
@@ -193,9 +194,16 @@ async def set_due(
         assignee_max = req.assignee.max_id if req.assignee else None
     log.info("Веб: заявка №%s, срок → %s (сотрудник %s)", req.id, new, actor.id)
     await _after_change(ctx, req, notify=False)
-    await _tell_applicant(ctx, req, "notify_due", actor, due=fmt_local(new, ctx.org.timezone))
+    reason = comment.strip()[:300]
+    # Причину видят и заявитель, и исполнитель (уведомление заявителю — в HTML, поэтому экранируем)
+    if reason:
+        await _tell_applicant(ctx, req, "notify_due_reason", actor, due=fmt_local(new, ctx.org.timezone),
+                              reason=esc(reason))
+    else:
+        await _tell_applicant(ctx, req, "notify_due", actor, due=fmt_local(new, ctx.org.timezone))
     if assignee_max and assignee_max != actor.max_id:
-        await _tell(ctx, assignee_max, f"Срок по заявке №{req.id} изменён: до {fmt_local(new, ctx.org.timezone)}.")
+        text = f"Срок по заявке №{req.id} изменён: до {fmt_local(new, ctx.org.timezone)}."
+        await _tell(ctx, assignee_max, f"{text} Причина: {reason}" if reason else text)
     return req
 
 

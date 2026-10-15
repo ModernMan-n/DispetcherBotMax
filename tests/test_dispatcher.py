@@ -102,8 +102,9 @@ async def test_due_shift_absolute_reset(web, disp):  # noqa: F811
 async def test_due_change_notifies_assignee(web, disp):  # noqa: F811
     async with await login(web, "+79000000002", 1002) as spec:
         await spec.post("/api/requests/1/action", json={"action": "take"})
-    await disp.post("/api/requests/1/due", json={"shift_hours": 48})
-    assert any("Срок по заявке №1 изменён" in t for t in web.bot.to(1002))
+    await disp.post("/api/requests/1/due", json={"shift_hours": 48, "comment": "нет доступа в кабинет"})
+    assert any("Срок по заявке №1 изменён" in t and t.endswith("Причина: нет доступа в кабинет")
+               for t in web.bot.to(1002))
 
 
 async def test_extended_due_is_not_overdue(web, disp):  # noqa: F811
@@ -241,10 +242,14 @@ async def test_applicant_notified_about_priority_due_and_assignment(web, disp): 
     await disp.post("/api/requests/1/priority", json={"priority": "urgent"})
     assert web.bot.to(APPLICANT_MAX)[-1] == "Приоритет заявки №1 изменён: срочный."
 
-    await disp.post("/api/requests/1/due", json={"shift_hours": 24, "comment": "внутренняя причина"})
+    await disp.post("/api/requests/1/due", json={"shift_hours": 24, "comment": "ждём <запчасть> & кабель"})
     note = web.bot.to(APPLICANT_MAX)[-1]
     assert note.startswith("Срок выполнения заявки №1 изменён: до ")
-    assert "причина" not in note  # причину переноса заявителю не показываем
+    # Причина видна заявителю; спецсимволы экранированы (уведомление в HTML)
+    assert note.endswith("Причина: ждём &lt;запчасть&gt; &amp; кабель")
+
+    await disp.post("/api/requests/1/due", json={"shift_hours": 24})
+    assert web.bot.to(APPLICANT_MAX)[-1].endswith(".") and "Причина" not in web.bot.to(APPLICANT_MAX)[-1]
 
     spec_id = next(a["id"] for a in (await disp.get("/api/meta")).json()["assignees"] if a["name"] == "Пётр Сетевик")
     await disp.post("/api/requests/1/assign", json={"assignee_id": spec_id})
