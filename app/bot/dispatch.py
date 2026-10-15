@@ -45,6 +45,7 @@ PRIORITY_LABELS = {
 
 NOTIFY_TEXT_KEY = {
     Status.IN_PROGRESS: "notify_in_progress",
+    Status.NEW: "notify_released",  # вернули в очередь
     Status.DONE: "notify_done",
     Status.CANCELLED: "notify_cancelled",
 }
@@ -220,14 +221,34 @@ async def sync_cards(bot: Bot, db: Database, org: OrgConfig, req: Request, *, sk
             log.warning("Не удалось обновить карточку №%s (%s)", req.id, c.message_id, exc_info=True)
 
 
-async def notify_applicant(bot: Bot, org: OrgConfig, req: Request) -> None:
+def assignee_link(req: Request) -> str:
+    """Исполнитель для уведомления заявителю: имя — ссылка на профиль MAX, чтобы можно было написать."""
+    a = req.assignee
+    if a is None:
+        return "—"
+    return profile_link(a.name, a.max_id) if a.max_id else esc(a.name)
+
+
+async def tell_applicant(
+    bot: Bot, org: OrgConfig, req: Request, key: str, *, actor_max_id: int | None = None, **values
+) -> None:
+    """Уведомление заявителю (текст из org.yaml, формат HTML). Себе о своих же действиях не пишем."""
+    if actor_max_id is not None and actor_max_id == req.applicant_max_id:
+        return
+    try:
+        await bot.send_message(
+            user_id=req.applicant_max_id, text=org.text(key, id=req.id, **values), format=CARD_FORMAT,
+        )
+    except Exception:
+        log.exception("Не удалось уведомить заявителя по заявке №%s", req.id)
+
+
+async def notify_applicant(bot: Bot, org: OrgConfig, req: Request, *, actor_max_id: int | None = None) -> None:
+    """Смена статуса: взята (с исполнителем), возвращена в очередь, выполнена, отменена."""
     key = NOTIFY_TEXT_KEY.get(Status(req.status))
     if key is None:
         return
-    try:
-        await bot.send_message(user_id=req.applicant_max_id, text=org.text(key, id=req.id))
-    except Exception:
-        log.exception("Не удалось уведомить заявителя по заявке №%s", req.id)
+    await tell_applicant(bot, org, req, key, actor_max_id=actor_max_id, assignee=assignee_link(req))
 
 
 def _pressed_mid(event: MessageCallback) -> str | None:
@@ -293,7 +314,7 @@ def build_dispatch_router(org: OrgConfig, db: Database, members: MembershipCheck
         log.info("Заявка №%s → %s (%s)", req.id, status, user.user_id)
         await event.edit(text=render_card(org, req), attachments=card_keyboard(req), format=CARD_FORMAT)
         await sync_cards(event.bot, db, org, req, skip_mid=_pressed_mid(event))
-        await notify_applicant(event.bot, org, req)
+        await notify_applicant(event.bot, org, req, actor_max_id=user.user_id)
 
     @router.message_callback(Card.filter(F.act == "take"), access)
     async def on_take(event: MessageCallback, payload: Card):

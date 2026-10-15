@@ -14,7 +14,16 @@ from datetime import datetime, timedelta
 from maxapi import Bot
 
 from app import repo, staff
-from app.bot.dispatch import CARD_FORMAT, notify_applicant, profile_link, send_card, send_to_specialists, sync_cards
+from app.bot.dispatch import (
+    CARD_FORMAT,
+    assignee_link,
+    notify_applicant,
+    profile_link,
+    send_card,
+    send_to_specialists,
+    sync_cards,
+    tell_applicant,
+)
 from app.config import OrgConfig
 from app.db import Database
 from app.formatting import fmt_local
@@ -51,13 +60,19 @@ STATUS_BY_ACTION = {
 }
 
 
-async def _after_change(ctx: Ctx, req: Request, *, notify: bool) -> None:
+async def _after_change(ctx: Ctx, req: Request, *, notify: bool, actor: Assignee | None = None) -> None:
+    """Обновить карточки в MAX; notify — сообщить заявителю о смене статуса."""
     if ctx.bot is None:
         log.warning("Бот не настроен — карточки заявки №%s в MAX не обновлены", req.id)
         return
     await sync_cards(ctx.bot, ctx.db, ctx.org, req, skip_mid=None)
     if notify:
-        await notify_applicant(ctx.bot, ctx.org, req)
+        await notify_applicant(ctx.bot, ctx.org, req, actor_max_id=actor.max_id if actor else None)
+
+
+async def _tell_applicant(ctx: Ctx, req: Request, key: str, actor: Assignee, **values) -> None:
+    if ctx.bot is not None:
+        await tell_applicant(ctx.bot, ctx.org, req, key, actor_max_id=actor.max_id, **values)
 
 
 async def _tell(ctx: Ctx, max_id: int | None, text: str) -> None:
@@ -102,7 +117,7 @@ async def change_status(ctx: Ctx, request_id: int, action: str, actor: Assignee)
             raise ActionError(str(e)) from e
         await s.refresh(req, ["assignee"])
     log.info("Веб: заявка №%s → %s (сотрудник %s)", req.id, status, actor.id)
-    await _after_change(ctx, req, notify=True)
+    await _after_change(ctx, req, notify=True, actor=actor)
     return req
 
 
@@ -139,6 +154,7 @@ async def set_priority(ctx: Ctx, request_id: int, priority: str, actor: Assignee
         assignee_max = req.assignee.max_id if req.assignee else None
     log.info("Веб: заявка №%s, приоритет %s → %s (сотрудник %s)", req.id, old, new, actor.id)
     await _after_change(ctx, req, notify=False)
+    await _tell_applicant(ctx, req, "notify_priority", actor, priority=PRIORITY_TITLES[new])
     if new in (Priority.URGENT, Priority.HIGH) and assignee_max and assignee_max != actor.max_id:
         await _tell(ctx, assignee_max, f"Заявке №{req.id} поставлен {PRIORITY_TITLES[new]} приоритет.")
     return req
@@ -177,6 +193,7 @@ async def set_due(
         assignee_max = req.assignee.max_id if req.assignee else None
     log.info("Веб: заявка №%s, срок → %s (сотрудник %s)", req.id, new, actor.id)
     await _after_change(ctx, req, notify=False)
+    await _tell_applicant(ctx, req, "notify_due", actor, due=fmt_local(new, ctx.org.timezone))
     if assignee_max and assignee_max != actor.max_id:
         await _tell(ctx, assignee_max, f"Срок по заявке №{req.id} изменён: до {fmt_local(new, ctx.org.timezone)}.")
     return req
@@ -206,7 +223,10 @@ async def assign(ctx: Ctx, request_id: int, assignee_id: int, actor: Assignee) -
         await s.refresh(req, ["assignee"])
         target_max_id = target.max_id
     log.info("Веб: заявка №%s назначена сотруднику %s (назначил %s)", req.id, assignee_id, actor.id)
-    await _after_change(ctx, req, notify=status == Status.NEW)
+    await _after_change(ctx, req, notify=status == Status.NEW, actor=actor)
+    if status != Status.NEW:
+        # Заявка уже была в работе — сменился исполнитель
+        await _tell_applicant(ctx, req, "notify_reassigned", actor, assignee=assignee_link(req))
     if ctx.bot is not None and target_max_id is not None:
         await _tell(ctx, target_max_id, f"Вам назначена заявка №{req.id}.")
         await send_card(ctx.bot, ctx.db, ctx.org, req, user_id=target_max_id)

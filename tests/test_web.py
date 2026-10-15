@@ -196,7 +196,9 @@ async def test_specialist_works_requests(web):
 
         r = await c.post("/api/requests/1/action", json={"action": "take"})
         assert r.status_code == 200 and r.json()["assignee"] == "Пётр Сетевик"
-        assert web.bot.to(APPLICANT_MAX)[-1] == web.org.text("notify_in_progress", id=1)
+        assert web.bot.to(APPLICANT_MAX)[-1] == (
+            f'Ваша заявка №1 взята в работу. Исполнитель: <a href="max://user/{SPEC_MAX}">Пётр Сетевик</a>'
+        )
         assert [i["id"] for i in (await c.get("/api/requests?scope=mine")).json()["items"]] == [1]
 
         # Уже в работе — второй раз взять нельзя

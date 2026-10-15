@@ -94,7 +94,9 @@ async def test_take_and_done_notify_applicant(h, db, org):
     assert "В работе — Пётр Мастер" in h.last_edit.text
     assert h.last_edit.format == "html" and 'href="max://user/100"' in h.last_edit.text
     assert "r|done|1" in buttons_of(h.last_edit.attachments)
-    assert h.to_user(100)[-1]["text"] == org.text("notify_in_progress", id=1)
+    note = h.to_user(100)[-1]
+    assert note["text"] == "Ваша заявка №1 взята в работу. Исполнитель: Пётр Мастер"
+    assert note["format"] == "html" and 'href="max://user/200"' in note["html"]  # исполнитель — ссылкой
 
     await h.press_in_chat("r|done|1")
     assert "Выполнена — Пётр Мастер, за" in h.last_edit.text and "работы" in h.last_edit.text
@@ -176,3 +178,18 @@ async def test_card_escapes_user_text(h):
     assert "&lt;b&gt;проектор&lt;/b&gt; &amp;" in card["html"]
     assert 'Не работает <b>проектор</b> & <a href="x">ссылка</a>' in card["text"]
     assert card["html"].count("<a ") == 1  # единственная ссылка — на заявителя
+
+
+async def test_release_notifies_applicant(h, org):
+    await h.submit_request()
+    await h.press_in_chat("r|take|1")
+    await h.press_in_chat("r|release|1")
+    assert h.to_user(100)[-1]["text"] == org.text("notify_released", id=1)
+
+
+async def test_no_notification_about_own_actions(h, db, org):
+    """Заявитель сам взял свою заявку (например, диспетчер) — уведомлять его не о чем."""
+    await h.submit_request()
+    before = len(h.to_user(100))
+    await h.press_in_chat("r|take|1", user={"user_id": 100, "first_name": "Иван", "last_name": "Тестов", "is_bot": False})
+    assert len(h.to_user(100)) == before

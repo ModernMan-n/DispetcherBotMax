@@ -232,3 +232,33 @@ async def test_staff_invite_link_opens_login(h):
 async def test_login_page_shows_bot_link(web):  # noqa: F811
     async with client() as c:
         assert (await c.get("/api/public")).json() == {"staff_link": "https://max.ru/dispatch_test_bot?start=staff"}
+
+
+# --- уведомления заявителю ---
+
+
+async def test_applicant_notified_about_priority_due_and_assignment(web, disp):  # noqa: F811
+    await disp.post("/api/requests/1/priority", json={"priority": "urgent"})
+    assert web.bot.to(APPLICANT_MAX)[-1] == "Приоритет заявки №1 изменён: срочный."
+
+    await disp.post("/api/requests/1/due", json={"shift_hours": 24, "comment": "внутренняя причина"})
+    note = web.bot.to(APPLICANT_MAX)[-1]
+    assert note.startswith("Срок выполнения заявки №1 изменён: до ")
+    assert "причина" not in note  # причину переноса заявителю не показываем
+
+    spec_id = next(a["id"] for a in (await disp.get("/api/meta")).json()["assignees"] if a["name"] == "Пётр Сетевик")
+    await disp.post("/api/requests/1/assign", json={"assignee_id": spec_id})
+    assert web.bot.to(APPLICANT_MAX)[-1] == (
+        'Ваша заявка №1 взята в работу. Исполнитель: <a href="max://user/1002">Пётр Сетевик</a>'
+    )
+
+    me = (await disp.get("/api/me")).json()["id"]
+    await disp.post("/api/requests/1/assign", json={"assignee_id": me})
+    assert web.bot.to(APPLICANT_MAX)[-1] == (
+        f'По заявке №1 назначен другой исполнитель: <a href="max://user/{DISP_MAX}">Диспетчер Дарья</a>'
+    )
+
+
+async def test_unchanged_priority_sends_nothing(web, disp):  # noqa: F811
+    await disp.post("/api/requests/1/priority", json={"priority": "normal"})
+    assert web.bot.to(APPLICANT_MAX) == []
