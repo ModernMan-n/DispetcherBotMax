@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -14,6 +15,7 @@ from zoneinfo import ZoneInfo
 from maxapi import Bot, F, Router
 from maxapi.enums.chat_type import ChatType
 from maxapi.enums.intent import Intent
+from maxapi.enums.parse_mode import ParseMode
 from maxapi.filters.callback_payload import CallbackPayload
 from maxapi.filters.filter import BaseFilter
 from maxapi.types import BotAdded, MessageCallback
@@ -71,6 +73,20 @@ class CardAccess(BaseFilter):
             return await staff.get_specialist(s, self.org.org_id, event.callback.user.user_id) is not None
 
 
+# Карточка отправляется в формате HTML (ради ссылки на профиль заявителя),
+# поэтому весь текст от пользователей экранируем.
+CARD_FORMAT = ParseMode.HTML
+
+
+def esc(text: object) -> str:
+    return html.escape(str(text), quote=False)
+
+
+def profile_link(name: str, max_id: int) -> str:
+    """Имя — ссылка на профиль в MAX (открывает чат с человеком)."""
+    return f'<a href="max://user/{int(max_id)}">{esc(name)}</a>'
+
+
 def render_card(org: OrgConfig, req: Request) -> str:
     tz = ZoneInfo(org.timezone)
 
@@ -79,18 +95,18 @@ def render_card(org: OrgConfig, req: Request) -> str:
 
     status = Status(req.status)
     lines = [
-        f"Заявка №{req.id} · {org.category_titles.get(req.category, req.category)}",
-        f"{org.building_titles.get(req.building, req.building)}, каб. {req.room}",
-        req.description,
-        f"От: {req.applicant_name}",
+        f"<b>Заявка №{req.id}</b> · {esc(org.category_titles.get(req.category, req.category))}",
+        f"{esc(org.building_titles.get(req.building, req.building))}, каб. {esc(req.room)}",
+        esc(req.description),
+        f"От: {profile_link(req.applicant_name, req.applicant_max_id)}",
         f"Создана: {local(req.created_at)}",
         "",
     ]
     status_line = STATUS_LINE[status]
     if status == Status.IN_PROGRESS and req.assignee:
-        status_line += f" — {req.assignee.name}, с {local(req.taken_at)}"
+        status_line += f" — {esc(req.assignee.name)}, с {local(req.taken_at)}"
     elif status == Status.DONE:
-        who = f" — {req.assignee.name}" if req.assignee else ""
+        who = f" — {esc(req.assignee.name)}" if req.assignee else ""
         status_line += f"{who}, за {format_duration(req.closed_at - req.created_at)}"
     lines.append(status_line)
     return "\n".join(lines)
@@ -140,7 +156,8 @@ def category_keyboard(org: OrgConfig, req: Request) -> list:
 async def _send_card(bot: Bot, db: Database, org: OrgConfig, req: Request, *, chat_id=None, user_id=None) -> None:
     try:
         sent = await bot.send_message(
-            chat_id=chat_id, user_id=user_id, text=render_card(org, req), attachments=card_keyboard(req)
+            chat_id=chat_id, user_id=user_id, text=render_card(org, req), attachments=card_keyboard(req),
+            format=CARD_FORMAT,
         )
     except Exception:
         log.exception("Не удалось отправить карточку №%s (chat=%s, user=%s)", req.id, chat_id, user_id)
@@ -185,7 +202,7 @@ async def sync_cards(bot: Bot, db: Database, org: OrgConfig, req: Request, *, sk
         if c.message_id == skip_mid:
             continue
         try:
-            await bot.edit_message(message_id=c.message_id, text=text, attachments=attachments)
+            await bot.edit_message(message_id=c.message_id, text=text, attachments=attachments, format=CARD_FORMAT)
         except Exception:
             # Старые сообщения MAX может не дать отредактировать — не страшно.
             log.warning("Не удалось обновить карточку №%s (%s)", req.id, c.message_id, exc_info=True)
@@ -245,7 +262,7 @@ def build_dispatch_router(org: OrgConfig, db: Database, members: MembershipCheck
                 return
             if status not in TRANSITIONS[Status(req.status)]:
                 # Кто-то успел раньше — просто показываем актуальное состояние.
-                await event.edit(text=render_card(org, req), attachments=card_keyboard(req))
+                await event.edit(text=render_card(org, req), attachments=card_keyboard(req), format=CARD_FORMAT)
                 return
             assignee_id = None
             if status == Status.IN_PROGRESS:
@@ -258,11 +275,11 @@ def build_dispatch_router(org: OrgConfig, db: Database, members: MembershipCheck
             except repo.TransitionError:
                 # Заявку только что изменили в другом месте (например, в веб-интерфейсе)
                 await s.refresh(req, ["assignee"])
-                await event.edit(text=render_card(org, req), attachments=card_keyboard(req))
+                await event.edit(text=render_card(org, req), attachments=card_keyboard(req), format=CARD_FORMAT)
                 return
             await s.refresh(req, ["assignee"])
         log.info("Заявка №%s → %s (%s)", req.id, status, user.user_id)
-        await event.edit(text=render_card(org, req), attachments=card_keyboard(req))
+        await event.edit(text=render_card(org, req), attachments=card_keyboard(req), format=CARD_FORMAT)
         await sync_cards(event.bot, db, org, req, skip_mid=_pressed_mid(event))
         await notify_applicant(event.bot, org, req)
 
@@ -289,7 +306,7 @@ def build_dispatch_router(org: OrgConfig, db: Database, members: MembershipCheck
             await event.ack(notification="Заявка не найдена")
             return
         attachments = keyboard(req) if Status(req.status) in ACTIVE_STATUSES else []
-        await event.edit(text=render_card(org, req), attachments=attachments)
+        await event.edit(text=render_card(org, req), attachments=attachments, format=CARD_FORMAT)
 
     @router.message_callback(Card.filter(F.act == "open"), access)
     async def on_open(event: MessageCallback, payload: Card):
@@ -326,7 +343,7 @@ def build_dispatch_router(org: OrgConfig, db: Database, members: MembershipCheck
                 return
             changed = req.category != payload.code
             await repo.set_category(s, req, payload.code)
-        await event.edit(text=render_card(org, req), attachments=card_keyboard(req))
+        await event.edit(text=render_card(org, req), attachments=card_keyboard(req), format=CARD_FORMAT)
         await sync_cards(event.bot, db, org, req, skip_mid=_pressed_mid(event))
         if changed and Status(req.status) == Status.NEW:
             # Заявка сменила направление — показываем её специалистам нового направления.

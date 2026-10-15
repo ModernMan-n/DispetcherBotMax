@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import html
 import logging
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -36,15 +38,23 @@ async def h(db, org, monkeypatch, caplog, staff_chat):
     bot = Bot(token="test", auto_requests=False, auto_check_subscriptions=False)
     harness = None
 
-    async def fake_send_message(chat_id=None, user_id=None, text=None, attachments=None, **kw):
+    def plain(text, fmt):
+        """Текст так, как его увидит человек (без HTML-разметки)."""
+        if text is None or fmt is None or str(fmt) != "html":
+            return text
+        return html.unescape(re.sub(r"<[^>]+>", "", text))
+
+    async def fake_send_message(chat_id=None, user_id=None, text=None, attachments=None, format=None, **kw):
         mid = f"out{len(harness.sent) + 1}"
-        harness.sent.append(
-            {"mid": mid, "chat_id": chat_id, "user_id": user_id, "text": text, "attachments": attachments}
-        )
+        harness.sent.append({
+            "mid": mid, "chat_id": chat_id, "user_id": user_id, "text": plain(text, format), "html": text,
+            "format": format, "attachments": attachments,
+        })
         return SimpleNamespace(message=SimpleNamespace(body=SimpleNamespace(mid=mid)))
 
-    async def fake_edit_message(message_id, text=None, attachments=None, **kw):
-        harness.edits.append({"message_id": message_id, "text": text, "attachments": attachments})
+    async def fake_edit_message(message_id, text=None, attachments=None, format=None, **kw):
+        harness.edits.append({"message_id": message_id, "text": plain(text, format), "html": text,
+                              "format": format, "attachments": attachments})
 
     async def fake_send_callback(callback_id, message=None, notification=None, **kw):
         # Как настоящий MAX: пустой ответ на callback — ошибка 400.

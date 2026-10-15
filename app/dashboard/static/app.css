@@ -308,3 +308,6 @@ dl.facts dd { margin: 0; }
 .theme-toggle .moon { display: none; }
 :root[data-theme="dark"] .theme-toggle .moon { display: block; }
 :root[data-theme="dark"] .theme-toggle .sun { display: none; }
+
+.profile-link { color: var(--accent); text-decoration: none; font-weight: 500; }
+.profile-link:hover { text-decoration: underline; }

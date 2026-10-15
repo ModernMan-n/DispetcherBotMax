@@ -111,6 +111,7 @@ docker compose exec bot python -m scripts.staff add "Ваше имя" +790012345
 | Обновить до новой версии | `git pull && docker compose up -d --build` |
 | Логи | `docker compose logs -f bot` / `web` / `caddy` |
 | Перезапуск | `docker compose restart bot web` |
+| После правки `.env` | `docker compose up -d --force-recreate bot web` (обычный restart не перечитывает `.env`) |
 | Остановить всё | `docker compose down` |
 | Сотрудники из консоли | `docker compose exec bot python -m scripts.staff list` |
 | Резервная копия вручную | `docker compose exec -T bot python -m scripts.backup` |

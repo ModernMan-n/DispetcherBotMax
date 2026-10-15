@@ -180,6 +180,7 @@ async def test_viewer_is_read_only(web):
         assert (await c.get("/api/stats")).status_code == 200
         items = (await c.get("/api/requests")).json()["items"]
         assert items and "applicant" not in items[0]  # руководству персональные данные не нужны
+        assert "applicant_url" not in items[0]
         assert (await c.post("/api/requests/1/action", json={"action": "take"})).status_code == 403
         assert (await c.get("/api/staff")).status_code == 403
 
@@ -188,6 +189,7 @@ async def test_specialist_works_requests(web):
     async with await login(web, SPEC_PHONE, SPEC_MAX) as c:
         items = (await c.get("/api/requests")).json()["items"]
         assert items[0]["applicant"] == "Иван Заявитель"
+        assert items[0]["applicant_url"] == f"max://user/{APPLICANT_MAX}"
 
         r = await c.post("/api/requests/1/action", json={"action": "take"})
         assert r.status_code == 200 and r.json()["assignee"] == "Пётр Сетевик"

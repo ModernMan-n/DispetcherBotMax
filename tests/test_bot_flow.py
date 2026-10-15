@@ -81,6 +81,9 @@ async def test_new_request_posted_to_dispatch_chat(h):
     assert "Заявка №1 · Компьютерная техника" in cards[0]["text"]
     assert "Корпус 2, каб. 214" in cards[0]["text"]
     assert "От: Иван Тестов" in cards[0]["text"]
+    # Заявитель — ссылка на профиль MAX
+    assert 'От: <a href="max://user/100">Иван Тестов</a>' in cards[0]["html"]
+    assert cards[0]["format"] == "html"
     assert "r|take|1" in buttons_of(cards[0]["attachments"])
 
 
@@ -89,6 +92,7 @@ async def test_take_and_done_notify_applicant(h, db, org):
 
     await h.press_in_chat("r|take|1")
     assert "В работе — Пётр Мастер" in h.last_edit.text
+    assert h.last_edit.format == "html" and 'href="max://user/100"' in h.last_edit.text
     assert "r|done|1" in buttons_of(h.last_edit.attachments)
     assert h.to_user(100)[-1]["text"] == org.text("notify_in_progress", id=1)
 
@@ -163,3 +167,12 @@ async def test_group_chat_messages_not_answered(h):
     before = len(h.sent)
     await h.text("Всем привет", user=WORKER, chat_id=DISPATCH_CHAT_ID, chat_type="chat")
     assert len(h.sent) == before
+
+
+async def test_card_escapes_user_text(h):
+    """Описание с HTML-символами не ломает карточку и не превращается в разметку."""
+    await h.submit_request('Не работает <b>проектор</b> & <a href="x">ссылка</a>')
+    card = h.in_chat()[0]
+    assert "&lt;b&gt;проектор&lt;/b&gt; &amp;" in card["html"]
+    assert 'Не работает <b>проектор</b> & <a href="x">ссылка</a>' in card["text"]
+    assert card["html"].count("<a ") == 1  # единственная ссылка — на заявителя

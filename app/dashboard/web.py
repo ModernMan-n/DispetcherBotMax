@@ -292,6 +292,7 @@ def request_row(r: Req, user: Assignee, now: datetime) -> dict:
     # Имя заявителя видят только те, кто работает с заявками
     if Perm.WORK in auth.perms_of(user):
         row["applicant"] = r.applicant_name
+        row["applicant_url"] = f"max://user/{r.applicant_max_id}"  # открывает профиль в приложении MAX
     return row
 
 

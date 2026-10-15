@@ -256,7 +256,10 @@ function openRequest(r) {
     el("dt", {}, "Категория"), el("dd", {}, r.category_title, r.category_source === "manual" ? el("span", { class: "hint" }, " · исправлена вручную") : null),
     el("dt", {}, "Место"), el("dd", {}, `${r.building_title}, каб. ${r.room}`),
     el("dt", {}, "Проблема"), el("dd", {}, r.description),
-    r.applicant ? [el("dt", {}, "Заявитель"), el("dd", {}, r.applicant)] : null,
+    r.applicant ? [el("dt", {}, "Заявитель"), el("dd", {},
+      r.applicant_url
+        ? el("a", { href: r.applicant_url, class: "profile-link", title: "Открыть профиль в MAX" }, r.applicant)
+        : r.applicant)] : null,
     el("dt", {}, "Исполнитель"), el("dd", {}, r.assignee || "—"),
     el("dt", {}, "Создана"), el("dd", {}, r.created_at),
     el("dt", {}, active ? "Висит" : "Выполнена за"), el("dd", {}, r.age),
