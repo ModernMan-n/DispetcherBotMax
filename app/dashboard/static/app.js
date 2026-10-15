@@ -204,6 +204,32 @@ async function loadRequests() {
   }
 }
 
+const PRIORITY_MARK = { urgent: "🔴", high: "🟠" };
+
+function priorityBadge(r) {
+  if (r.priority === "urgent") return el("span", { class: "badge bad" }, "срочно");
+  if (r.priority === "high") return el("span", { class: "badge warn" }, "высокий");
+  if (r.priority === "low") return el("span", { class: "badge flat" }, "низкий");
+  return null;
+}
+
+function dueCell(r) {
+  if (!r.due_at || !(r.status === "new" || r.status === "in_progress")) return el("span", { class: "muted" }, "—");
+  return r.overdue
+    ? el("span", { class: "badge bad", title: "срок прошёл" }, keepPairs(`до ${r.due_at}`))
+    : el("span", { class: "nowrap", title: r.due_left ? `осталось ${r.due_left}` : "" }, `до ${r.due_at}`);
+}
+
+// Заявитель: ссылка на профиль MAX. В браузере max:// открывается, только если стоит приложение MAX,
+// поэтому рядом — «прислать мне в MAX»: бот пришлёт ссылку, по которой профиль откроется точно.
+function applicantLink(r) {
+  if (!r.applicant) return el("span", { class: "muted" }, "—");
+  return el("a", {
+    href: r.applicant_url, class: "profile-link", title: "Открыть профиль в приложении MAX",
+    onclick: e => e.stopPropagation(),
+  }, r.applicant);
+}
+
 function renderRequests() {
   document.querySelectorAll("#req-tabs button").forEach(b =>
     b.setAttribute("aria-selected", String(b.dataset.scope === state.scope)));
@@ -213,21 +239,25 @@ function renderRequests() {
     return;
   }
   const closed = state.scope === "closed";
-  $("requests").replaceChildren(table(
-    [["№"], ["Создана"], ["Категория"], ["Место"], ["Проблема"], ["Статус"], ["Исполнитель"], [closed ? "Выполнена за" : "Висит", "num"]],
+  const showApplicant = can("work");
+  const head = [["№"], ["Создана"], ["Категория"], ["Место"], ["Проблема"]];
+  if (showApplicant) head.push(["Заявитель"]);
+  head.push(["Статус"], ["Исполнитель"], closed ? ["Выполнена за", "num"] : ["Срок"]);
+  $("requests").replaceChildren(table(head,
     requestsCache.map(r => el("tr", {
       class: "clickable", tabindex: 0,
       onclick: () => openRequest(r),
       onkeydown: e => { if (e.key === "Enter") openRequest(r); },
     },
-      el("td", { class: "muted" }, `№${r.id}`),
+      el("td", { class: "muted nowrap" }, PRIORITY_MARK[r.priority] ? `${PRIORITY_MARK[r.priority]} №${r.id}` : `№${r.id}`),
       el("td", { class: "muted" }, r.created_at),
       el("td", {}, r.category_title),
       el("td", {}, `${r.building_title}, каб. ${r.room}`),
       el("td", { class: "desc" }, r.description),
-      el("td", {}, statusBadge(r.status)),
+      showApplicant ? el("td", {}, applicantLink(r)) : null,
+      el("td", {}, el("div", { class: "chips" }, statusBadge(r.status), priorityBadge(r))),
       el("td", {}, r.assignee ? who(r.assignee) : el("span", { class: "muted" }, "—")),
-      el("td", { class: "num" }, r.overdue ? el("span", { class: "badge bad" }, keepPairs(r.age)) : keepPairs(r.age)),
+      closed ? el("td", { class: "num" }, keepPairs(r.age)) : el("td", {}, dueCell(r)),
     )),
   ));
 }
@@ -246,56 +276,114 @@ function selectInput(name, options, value) {
     options.map(([v, t]) => el("option", { value: v, selected: String(v) === String(value) }, t)));
 }
 
+function row(...children) {
+  return el("div", { class: "checks" }, ...children);
+}
+
+function grow(child) {
+  return el("div", { style: "flex:1;min-width:180px" }, child);
+}
+
+async function loadHistory(id, box) {
+  try {
+    const { items } = await api(`/api/requests/${id}/history`);
+    box.replaceChildren(...items.map(i => el("li", {},
+      el("span", { class: "muted nowrap" }, i.at), " ", i.text, i.who ? el("span", { class: "muted" }, ` — ${i.who}`) : null)));
+  } catch (e) {
+    box.replaceChildren(el("li", { class: "muted" }, `Не удалось загрузить историю: ${e.message}`));
+  }
+}
+
 function openRequest(r) {
   const dlg = $("req-dialog");
   $("req-title").textContent = `Заявка №${r.id}`;
   const active = r.status === "new" || r.status === "in_progress";
 
-  const facts = el("dl", { class: "facts" },
-    el("dt", {}, "Статус"), el("dd", {}, statusBadge(r.status), r.overdue ? [" ", el("span", { class: "badge bad" }, "просрочена")] : null),
-    el("dt", {}, "Категория"), el("dd", {}, r.category_title, r.category_source === "manual" ? el("span", { class: "hint" }, " · исправлена вручную") : null),
-    el("dt", {}, "Место"), el("dd", {}, `${r.building_title}, каб. ${r.room}`),
-    el("dt", {}, "Проблема"), el("dd", {}, r.description),
-    r.applicant ? [el("dt", {}, "Заявитель"), el("dd", {},
-      r.applicant_url
-        ? el("a", { href: r.applicant_url, class: "profile-link", title: "Открыть профиль в MAX" }, r.applicant)
-        : r.applicant)] : null,
-    el("dt", {}, "Исполнитель"), el("dd", {}, r.assignee || "—"),
-    el("dt", {}, "Создана"), el("dd", {}, r.created_at),
-    el("dt", {}, active ? "Висит" : "Выполнена за"), el("dd", {}, r.age),
-  );
-  const body = [facts];
-
   async function run(promise, message) {
     try {
-      const updated = await promise;
+      await promise;
       toast(message);
       dlg.close();
       await refreshCurrent();
-      return updated;
     } catch (e) {
       toast(e.message);
     }
   }
   const post = (path, payload) => api(`/api/requests/${r.id}/${path}`, { method: "POST", body: payload });
 
+  let dueText = "—";
+  if (r.due_at) {
+    dueText = [`до ${r.due_at}`];
+    if (active && r.overdue) dueText.push(" ", el("span", { class: "badge bad" }, "просрочена"));
+    else if (active && r.due_left) dueText.push(el("span", { class: "hint" }, ` · осталось ${r.due_left}`));
+    if (r.due_manual) dueText.push(el("span", { class: "hint" }, " · изменён вручную"));
+  }
+
+  const applicant = r.applicant ? [el("dt", {}, "Заявитель"), el("dd", {},
+    applicantLink(r), " ",
+    el("button", { class: "btn sm ghost", type: "button", title: "Бот пришлёт вам в MAX ссылку на профиль заявителя",
+      onclick: async () => {
+        try { toast((await post("contact", {})).message); } catch (e) { toast(e.message); }
+      } }, "Прислать мне в MAX"))] : null;
+
+  const facts = el("dl", { class: "facts" },
+    el("dt", {}, "Статус"), el("dd", {}, el("div", { class: "chips" }, statusBadge(r.status), priorityBadge(r))),
+    el("dt", {}, "Приоритет"), el("dd", {}, r.priority_title),
+    active ? [el("dt", {}, "Срок"), el("dd", {}, dueText)] : null,
+    el("dt", {}, "Категория"), el("dd", {}, r.category_title, r.category_source === "manual" ? el("span", { class: "hint" }, " · исправлена вручную") : null),
+    el("dt", {}, "Место"), el("dd", {}, `${r.building_title}, каб. ${r.room}`),
+    el("dt", {}, "Проблема"), el("dd", {}, r.description),
+    applicant,
+    el("dt", {}, "Исполнитель"), el("dd", {}, r.assignee || "—"),
+    el("dt", {}, "Создана"), el("dd", {}, r.created_at),
+    el("dt", {}, active ? "Висит" : "Выполнена за"), el("dd", {}, r.age),
+  );
+  const body = [facts];
+
+  if (active && can("admin_requests")) {
+    // Приоритет
+    const prio = selectInput("priority", state.meta.priorities.map(p => [p.code, p.title]), r.priority);
+    body.push(el("div", { class: "section-title" }, "Приоритет"),
+      row(grow(prio), el("button", { class: "btn", type: "button",
+        onclick: () => run(post("priority", { priority: prio.value }), "Приоритет изменён") }, "Изменить")));
+
+    // Срок
+    const dueInput = el("input", { class: "input", type: "datetime-local", value: r.due_iso || "" });
+    const comment = el("input", { class: "input", placeholder: "Причина (необязательно)", maxlength: 300 });
+    const shift = hours => run(post("due", { shift_hours: hours, comment: comment.value }), "Срок перенесён");
+    body.push(el("div", { class: "section-title" }, "Срок выполнения"),
+      row(
+        el("button", { class: "btn sm", type: "button", onclick: () => shift(24) }, "+1 день"),
+        el("button", { class: "btn sm", type: "button", onclick: () => shift(72) }, "+3 дня"),
+        el("button", { class: "btn sm", type: "button", onclick: () => shift(168) }, "+1 неделя"),
+        r.due_manual ? el("button", { class: "btn sm ghost", type: "button",
+          onclick: () => run(post("due", { reset: true, comment: comment.value }), "Срок возвращён к нормативу") },
+          "По нормативу") : null,
+      ),
+      el("div", { style: "height:8px" }),
+      row(grow(dueInput), el("button", { class: "btn", type: "button", onclick: () => {
+        if (!dueInput.value) return toast("Выберите дату и время");
+        run(post("due", { due_at: dueInput.value, comment: comment.value }), "Срок изменён");
+      } }, "Перенести")),
+      el("div", { style: "height:8px" }), comment);
+  }
+
   if (active && can("work")) {
-    const cat = selectInput("category", state.meta.categories.map(c => [c.code, c.title]), r.category);
+    const cat = selectInput("category", state.meta.categories.filter(c => c.active || c.code === r.category)
+      .map(c => [c.code, c.title]), r.category);
     body.push(el("div", { class: "section-title" }, "Категория"),
-      el("div", { class: "checks" }, el("div", { style: "flex:1;min-width:200px" }, cat),
-        el("button", { class: "btn", type: "button",
-          onclick: () => run(post("category", { category: cat.value }), "Категория изменена") }, "Изменить")));
+      row(grow(cat), el("button", { class: "btn", type: "button",
+        onclick: () => run(post("category", { category: cat.value }), "Категория изменена") }, "Изменить")));
   }
 
   if (active && can("admin_requests")) {
     const assignees = state.meta.assignees;
     const sel = selectInput("assignee", [["", "Выберите исполнителя"], ...assignees.map(a => [a.id, a.name])], r.assignee_id ?? "");
     body.push(el("div", { class: "section-title" }, "Назначить исполнителя"),
-      el("div", { class: "checks" }, el("div", { style: "flex:1;min-width:200px" }, sel),
-        el("button", { class: "btn", type: "button", onclick: () => {
-          if (!sel.value) return toast("Выберите исполнителя");
-          run(post("assign", { assignee_id: Number(sel.value) }), "Исполнитель назначен");
-        } }, "Назначить")));
+      row(grow(sel), el("button", { class: "btn", type: "button", onclick: () => {
+        if (!sel.value) return toast("Выберите исполнителя");
+        run(post("assign", { assignee_id: Number(sel.value) }), "Исполнитель назначен");
+      } }, "Назначить")));
 
     const building = selectInput("building", state.meta.buildings.map(b => [b.code, b.title]), r.building);
     const room = el("input", { class: "input", name: "room", value: r.room, maxlength: 20 });
@@ -309,7 +397,11 @@ function openRequest(r) {
         api(`/api/requests/${r.id}`, { method: "PATCH", body: { building: building.value, room: room.value, description: desc.value } }),
         "Заявка изменена") }, "Сохранить изменения"));
   }
+
+  const history = el("ul", { class: "history" }, el("li", { class: "muted" }, "Загрузка…"));
+  body.push(el("div", { class: "section-title" }, "История"), history);
   $("req-body").replaceChildren(...body);
+  loadHistory(r.id, history);
 
   const foot = [];
   if (active && can("work")) {
@@ -360,7 +452,9 @@ function renderStaff() {
       el("td", {}, el("span", { class: `badge ${a.role === "admin" ? "accent" : "flat"}` }, a.role_title)),
       el("td", {}, a.role === "viewer" ? el("span", { class: "muted" }, "—")
         : el("div", { class: "chips" }, a.directions.length ? a.directions.map(d => el("span", { class: "badge flat" }, titles[d] || d)) : el("span", { class: "muted" }, "не заданы"))),
-      el("td", {}, a.linked ? "подключён" : el("span", { class: "muted" }, "ещё не входил")),
+      el("td", {}, a.linked ? "подключён" : el("span", { class: "nowrap" }, el("span", { class: "muted" }, "ещё не входил"),
+        el("button", { class: "btn sm soft invite", type: "button", title: "Скопировать приглашение для сотрудника",
+          onclick: e => { e.stopPropagation(); copyInvite(a); } }, "Пригласить"))),
       el("td", {}, a.role === "viewer" ? el("span", { class: "muted" }, "—")
         : el("span", { class: "who" }, el("span", { class: `dot ${a.on_duty ? "on" : "off"}` }), a.on_duty ? "на линии" : "нет")),
       el("td", {}, a.active ? el("span", { class: "badge good" }, "активен") : el("span", { class: "badge bad" }, "отключён")),
@@ -369,6 +463,19 @@ function renderStaff() {
 }
 
 let editing = null;
+
+async function copyInvite(a) {
+  const link = state.meta.staff_link;
+  const text = link
+    ? `${a.name}, здравствуйте! Чтобы работать с заявками диспетчерской, откройте бота по ссылке и нажмите «Поделиться номером»: ${link}`
+    : `${a.name}, здравствуйте! Чтобы работать с заявками диспетчерской, напишите боту диспетчерской команду /staff и нажмите «Поделиться номером».`;
+  try {
+    await navigator.clipboard.writeText(text);
+    toast("Приглашение скопировано — отправьте его сотруднику");
+  } catch (_) {
+    prompt("Скопируйте приглашение:", text);
+  }
+}
 
 function openStaff(a) {
   editing = a;
@@ -431,11 +538,95 @@ async function deleteStaff() {
   }
 }
 
+// ================= Категории =================
+
+let categoriesCache = [];
+let editingCat = null;
+
+async function loadCategories() {
+  try {
+    categoriesCache = (await api("/api/categories")).items;
+    renderCategories();
+    showError("");
+  } catch (e) {
+    showError(`Не удалось загрузить категории: ${e.message}`);
+  }
+}
+
+function renderCategories() {
+  $("categories").replaceChildren(table(
+    [["Категория"], ["Норматив", "num"], ["Ключевые слова"], ["Заявок", "num"], ["Статус"]],
+    categoriesCache.map(c => el("tr", {
+      class: "clickable", tabindex: 0,
+      onclick: () => openCategory(c),
+      onkeydown: e => { if (e.key === "Enter") openCategory(c); },
+    },
+      el("td", { class: "strong" }, c.title, c.fallback ? el("span", { class: "hint" }, " · по умолчанию") : null),
+      el("td", { class: "num" }, keepPairs(`${c.sla_hours} ч`)),
+      el("td", { class: "desc" }, c.keywords.length ? c.keywords.slice(0, 8).join(", ") + (c.keywords.length > 8 ? "…" : "") : el("span", { class: "muted" }, "—")),
+      el("td", { class: "num" }, c.requests),
+      el("td", {}, c.active ? el("span", { class: "badge good" }, "активна") : el("span", { class: "badge flat" }, "отключена")),
+    )),
+  ));
+}
+
+function openCategory(c) {
+  editingCat = c;
+  const form = $("cat-form");
+  form.reset();
+  $("cat-error").hidden = true;
+  $("cat-title").textContent = c ? c.title : "Новая категория";
+  form.title.value = c ? c.title : "";
+  form.sla_hours.value = c ? c.sla_hours : 24;
+  form.keywords.value = c ? c.keywords.join(", ") : "";
+  form.active.checked = c ? c.active : true;
+  $("cat-active-field").hidden = !c || c.fallback;
+  $("cat-fallback-hint").hidden = !(c && c.fallback);
+  $("cat-delete").hidden = !c || c.fallback;
+  $("cat-dialog").showModal();
+  form.title.focus();
+}
+
+async function saveCategory(e) {
+  e.preventDefault();
+  const form = $("cat-form");
+  const payload = {
+    title: form.title.value.trim(),
+    sla_hours: Number(form.sla_hours.value),
+    keywords: form.keywords.value.split(/[,;\n]/).map(w => w.trim()).filter(Boolean),
+  };
+  if (editingCat && !editingCat.fallback) payload.active = form.active.checked;
+  try {
+    if (editingCat) await api(`/api/categories/${editingCat.code}`, { method: "PATCH", body: payload });
+    else await api("/api/categories", { method: "POST", body: payload });
+    $("cat-dialog").close();
+    toast(editingCat ? "Категория сохранена" : "Категория добавлена");
+    await Promise.all([loadCategories(), loadMeta()]);
+  } catch (err) {
+    $("cat-error").textContent = err.message;
+    $("cat-error").hidden = false;
+  }
+}
+
+async function deleteCategory() {
+  if (!editingCat || !confirm(`Удалить категорию «${editingCat.title}»?`)) return;
+  try {
+    const res = await api(`/api/categories/${editingCat.code}`, { method: "DELETE" });
+    $("cat-dialog").close();
+    toast(res.archived ? "По категории есть заявки — она отключена, история сохранена" : "Категория удалена");
+    await Promise.all([loadCategories(), loadMeta()]);
+  } catch (err) {
+    $("cat-error").textContent = err.message;
+    $("cat-error").hidden = false;
+  }
+}
+
 // ================= Навигация и запуск =================
 
 const PAGES = {
   overview: { title: "Обзор", load: loadOverview },
   requests: { title: "Заявки", load: loadRequests },
+  categories: { title: "Категории", load: loadCategories, perm: "manage_categories" },
   staff: { title: "Сотрудники", load: loadStaff, perm: "manage_staff" },
 };
 
@@ -468,6 +659,9 @@ async function start() {
   await loadMeta();
 
   document.querySelectorAll("[data-perm]").forEach(n => { n.hidden = !can(n.dataset.perm); });
+  document.querySelectorAll("[data-perm-any]").forEach(n => {
+    n.hidden = !n.dataset.permAny.split(" ").some(can);
+  });
   $("org-name").textContent = state.me.org_name;
   $("demo").hidden = !state.me.demo;
   $("staff-role").replaceChildren(...state.meta.roles.map(r => el("option", { value: r.code }, r.title)));
@@ -497,6 +691,9 @@ $("req-tabs").addEventListener("click", e => {
   if (scope) { state.scope = scope; loadRequests(); }
 });
 $("staff-add").addEventListener("click", () => openStaff(null));
+$("cat-add").addEventListener("click", () => openCategory(null));
+$("cat-form").addEventListener("submit", saveCategory);
+$("cat-delete").addEventListener("click", deleteCategory);
 $("staff-form").addEventListener("submit", saveStaff);
 $("staff-form").role.addEventListener("change", syncRoleFields);
 $("staff-delete").addEventListener("click", deleteStaff);

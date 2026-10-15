@@ -59,7 +59,7 @@ async def close_buttons(event: MessageCallback) -> None:
 
 
 def build_router(
-    org: OrgConfig, db: Database, categorizer: Categorizer, members: MembershipChecker
+    org: OrgConfig, db: Database, members: MembershipChecker
 ) -> Router:
     router = Router(router_id="applicant")
     router.filter(InDialog())
@@ -170,7 +170,7 @@ def build_router(
             )
             return
         description = description[:DESCRIPTION_MAX_LEN]
-        guess = categorizer.guess(description)
+        guess = Categorizer(org.active_categories).guess(description)
         data = await context.update_data(description=description, category=guess.code)
         await context.set_state(NewRequest.confirm)
         await event.message.answer(
@@ -200,6 +200,7 @@ def build_router(
                 category=data["category"],
                 applicant_max_id=user.user_id,
                 applicant_name=display_name(user),
+                sla_hours=org.category_sla.get(data["category"]),
             )
         log.info("Создана заявка №%s (%s)", req.id, req.category)
         await close_buttons(event)

@@ -2,12 +2,22 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import ACTIVE_STATUSES, TRANSITIONS, Assignee, Request, Status, StatusLog, utcnow
+from app.models import (
+    ACTIVE_STATUSES,
+    TRANSITIONS,
+    Assignee,
+    Priority,
+    Request,
+    RequestEvent,
+    Status,
+    StatusLog,
+    utcnow,
+)
 
 
 class TransitionError(Exception):
@@ -25,7 +35,9 @@ async def create_request(
     applicant_max_id: int,
     applicant_name: str,
     now: datetime | None = None,
+    sla_hours: int | None = None,
 ) -> Request:
+    """sla_hours — норматив категории: из него срок выполнения (если не задан — срока нет)."""
     now = now or utcnow()
     req = Request(
         org_id=org_id,
@@ -37,6 +49,8 @@ async def create_request(
         status=Status.NEW,
         applicant_max_id=applicant_max_id,
         applicant_name=applicant_name,
+        priority=Priority.NORMAL,
+        due_at=now + timedelta(hours=sla_hours) if sla_hours is not None else None,
         log=[StatusLog(status=Status.NEW, changed_at=now, changed_by=applicant_max_id)],
     )
     s.add(req)
@@ -106,12 +120,28 @@ async def list_active_for_applicant(
     return list(rows)
 
 
-async def set_category(s: AsyncSession, req: Request, category: str) -> Request:
-    """Ручная правка категории диспетчером."""
+async def set_category(s: AsyncSession, req: Request, category: str, sla_hours: int | None = None) -> Request:
+    """Ручная правка категории. Срок пересчитывается по новому нормативу, если его не задавали вручную."""
     req.category = category
     req.category_source = "manual"
+    if sla_hours is not None and not req.due_manual:
+        req.due_at = req.created_at + timedelta(hours=sla_hours)
     await s.flush()
     return req
+
+
+async def log_event(
+    s: AsyncSession, req: Request, kind: str, text: str, *, actor_id: int | None, actor_name: str | None
+) -> None:
+    """Запись в историю заявки (срок, приоритет, правка, категория, назначение)."""
+    s.add(RequestEvent(request_id=req.id, kind=kind, text=text, actor_id=actor_id or None, actor_name=actor_name))
+    await s.flush()
+
+
+async def request_events(s: AsyncSession, request_id: int) -> list[RequestEvent]:
+    return list(await s.scalars(
+        select(RequestEvent).where(RequestEvent.request_id == request_id).order_by(RequestEvent.created_at)
+    ))
 
 
 async def get_or_create_assignee(s: AsyncSession, org_id: str, max_id: int, name: str) -> Assignee:

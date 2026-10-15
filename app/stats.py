@@ -48,6 +48,13 @@ def _change_pct(current: float | None, previous: float | None) -> float | None:
     return round(100 * (current - previous) / previous, 1)
 
 
+def _due(r: Request, sla: dict[str, timedelta]) -> datetime:
+    """Срок заявки: заданный (в том числе перенесённый диспетчером) или по нормативу категории."""
+    if r.due_at is not None:
+        return r.due_at
+    return r.created_at + sla.get(r.category, timedelta(days=36500))
+
+
 def _flow(rows: list[Request], lo: datetime, hi: datetime, sla: dict[str, timedelta]) -> dict:
     """Потоки заявок в окне [lo, hi]."""
 
@@ -57,7 +64,7 @@ def _flow(rows: list[Request], lo: datetime, hi: datetime, sla: dict[str, timede
     created = [r for r in rows if inside(r.created_at)]
     done = [r for r in rows if r.status == Status.DONE and inside(r.closed_at)]
     taken = [r for r in rows if inside(r.taken_at)]
-    on_time = {r.id for r in done if r.closed_at - r.created_at <= sla.get(r.category, timedelta.max)}
+    on_time = {r.id for r in done if r.closed_at <= _due(r, sla)}
     return {
         "created": created,
         "done": done,
@@ -90,8 +97,7 @@ async def collect(s: AsyncSession, org: OrgConfig, days: int, now: datetime | No
     )
 
     def is_overdue(r: Request) -> bool:
-        limit = sla.get(r.category)
-        return limit is not None and now - r.created_at > limit
+        return r.status in ACTIVE_STATUSES and now > _due(r, sla)
 
     active = [r for r in rows if r.status in ACTIVE_STATUSES]
     cur = _flow(rows, start, now, sla)
@@ -140,7 +146,7 @@ async def collect(s: AsyncSession, org: OrgConfig, days: int, now: datetime | No
                 "status": r.status,
                 "assignee": r.assignee.name if r.assignee else None,
                 "age": format_duration(now - r.created_at),
-                "over_by": format_duration(now - r.created_at - sla[r.category]),
+                "over_by": format_duration(now - _due(r, sla)),
                 "age_min": _minutes(now - r.created_at),
             }
             for r in active

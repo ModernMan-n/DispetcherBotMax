@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from collections import defaultdict, deque
@@ -22,13 +23,14 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.engine import make_url
 
-from app import actions, auth, staff, stats
+from app import actions, auth, categories, repo, staff, stats
 from app.auth import Perm
 from app.config import load_settings
 from app.db import open_db
-from app.formatting import format_duration
+from app.formatting import fmt_local, format_duration
 from app.membership import MembershipChecker
-from app.models import ACTIVE_STATUSES, Assignee, Request as Req, Role, Status, utcnow
+from app.models import ACTIVE_STATUSES, Assignee, Priority, Role, Status, utcnow
+from app.models import Request as Req
 
 log = logging.getLogger(__name__)
 
@@ -48,9 +50,28 @@ async def lifespan(app: FastAPI):
     # Сообщения шлём через API, события не читаем — второй копией бота это не является.
     app.state.bot = Bot(token=settings.bot_token) if settings.bot_token else None
     app.state.members = MembershipChecker(settings.org.staff_chat_id)
+    app.state.staff_link = None  # узнаём у MAX при первом обращении (staff_invite_link)
     app.state.code_requests = defaultdict(deque)
     yield
     await app.state.db.close()
+
+
+async def staff_invite_link() -> str | None:
+    """Ссылка «открыть бота и войти как сотрудник»: https://max.ru/<бот>?start=staff. Запоминается."""
+    if app.state.staff_link is None:
+        app.state.staff_link = await _ask_bot_link(app.state.bot) or ""
+    return app.state.staff_link or None
+
+
+async def _ask_bot_link(bot: Bot | None) -> str | None:
+    if bot is None:
+        return None
+    try:
+        me = await bot.get_me()
+    except Exception:
+        log.warning("Не удалось узнать имя бота — ссылки-приглашения не будет", exc_info=True)
+        return None
+    return f"https://max.ru/{me.username}?start=staff" if me and me.username else None
 
 
 app = FastAPI(title="Дашборд диспетчерской", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
@@ -85,6 +106,7 @@ def _demo_viewer() -> Assignee:
 
 
 async def current_user(request: Request) -> Assignee:
+    await categories.refresh(app.state.db, app.state.org)
     if app.state.demo:
         return _demo_viewer()
     token = request.cookies.get(COOKIE)
@@ -155,9 +177,16 @@ class CodeVerify(BaseModel):
 
 
 GENERIC_SENT = (
-    "Если номер есть в списке сотрудников и вы уже входили в бота через /staff, "
-    "код придёт в личные сообщения MAX."
+    "Если номер есть в списке сотрудников и вы уже подтвердили его в боте, "
+    "код придёт в личные сообщения MAX в течение минуты. "
+    "Нет кода — откройте бота по кнопке ниже и поделитесь номером, затем запросите код снова."
 )
+
+
+@app.get("/api/public")
+async def public_info() -> dict:
+    """Без входа: ссылка на бота для первого входа (на странице входа)."""
+    return {"staff_link": await staff_invite_link()}
 
 
 def _rate_limited(ip: str) -> bool:
@@ -261,8 +290,11 @@ async def meta(user: Assignee = Depends(require(Perm.VIEW))) -> dict:
                 if a.active and a.works_requests
             ]
     return {
+        "staff_link": await staff_invite_link(),
         "buildings": [{"code": b.code, "title": b.title} for b in org.buildings],
-        "categories": [{"code": c.code, "title": c.title} for c in org.categories],
+        "categories": [{"code": c.code, "title": c.title, "active": c.active} for c in org.categories],
+        "priorities": [{"code": p.value, "title": actions.PRIORITY_TITLES[p]} for p in
+                       (Priority.URGENT, Priority.HIGH, Priority.NORMAL, Priority.LOW)],
         "roles": [{"code": r.value, "title": auth.ROLE_TITLES[r]} for r in Role],
         "assignees": assignees,
     }
@@ -271,7 +303,6 @@ async def meta(user: Assignee = Depends(require(Perm.VIEW))) -> dict:
 def request_row(r: Req, user: Assignee, now: datetime) -> dict:
     org = app.state.org
     tz = ZoneInfo(org.timezone)
-    sla = next((c.sla_hours for c in org.categories if c.code == r.category), None)
     age = now - r.created_at
     row = {
         "id": r.id,
@@ -287,7 +318,13 @@ def request_row(r: Req, user: Assignee, now: datetime) -> dict:
         "assignee_id": r.assignee_id,
         "assignee": r.assignee.name if r.assignee else None,
         "age": format_duration(age if r.closed_at is None else r.closed_at - r.created_at),
-        "overdue": r.status in ACTIVE_STATUSES and sla is not None and age.total_seconds() > sla * 3600,
+        "overdue": r.is_overdue(now),
+        "priority": r.priority,
+        "priority_title": actions.PRIORITY_TITLES[Priority(r.priority)],
+        "due_at": fmt_local(r.due_at, org.timezone) if r.due_at else None,
+        "due_iso": r.due_at.astimezone(tz).strftime("%Y-%m-%dT%H:%M") if r.due_at else None,
+        "due_manual": r.due_manual,
+        "due_left": (format_duration(r.due_at - now) if r.due_at and r.due_at > now else None),
     }
     # Имя заявителя видят только те, кто работает с заявками
     if Perm.WORK in auth.perms_of(user):
@@ -304,9 +341,9 @@ async def list_requests(
 ) -> dict:
     q = select(Req).where(Req.org_id == app.state.org.org_id)
     if scope == "active":
-        q = q.where(Req.status.in_(ACTIVE_STATUSES)).order_by(Req.created_at)
+        q = q.where(Req.status.in_(ACTIVE_STATUSES)).order_by(*staff.priority_order())
     elif scope == "mine":
-        q = q.where(Req.status.in_(ACTIVE_STATUSES), Req.assignee_id == user.id).order_by(Req.created_at)
+        q = q.where(Req.status.in_(ACTIVE_STATUSES), Req.assignee_id == user.id).order_by(*staff.priority_order())
     else:
         q = q.where(Req.status.not_in(ACTIVE_STATUSES)).order_by(Req.closed_at.desc())
     async with app.state.db.session() as s:
@@ -367,6 +404,139 @@ async def request_edit(
     if not fields:
         raise HTTPException(422, "Нечего менять")
     return await _run(actions.edit_request(ctx(), request_id, fields, user), user)
+
+
+class PriorityBody(BaseModel):
+    priority: Priority
+
+
+class DueBody(BaseModel):
+    # Одно из трёх: новая дата (местное время организации), сдвиг в часах или возврат к нормативу
+    due_at: datetime | None = None
+    shift_hours: int | None = Field(None, ge=1, le=24 * 90)
+    reset: bool = False
+    comment: str = Field("", max_length=300)
+
+
+@app.post("/api/requests/{request_id}/priority")
+async def request_priority(
+    request_id: int, body: PriorityBody, user: Assignee = Depends(require(Perm.ADMIN_REQUESTS))
+) -> dict:
+    return await _run(actions.set_priority(ctx(), request_id, body.priority, user), user)
+
+
+@app.post("/api/requests/{request_id}/due")
+async def request_due(request_id: int, body: DueBody, user: Assignee = Depends(require(Perm.ADMIN_REQUESTS))) -> dict:
+    due_at = body.due_at
+    if due_at is not None and due_at.tzinfo is None:
+        # Из формы приходит местное время без часового пояса
+        due_at = due_at.replace(tzinfo=ZoneInfo(app.state.org.timezone))
+    return await _run(actions.set_due(
+        ctx(), request_id, user, due_at=due_at, shift_hours=body.shift_hours, reset=body.reset, comment=body.comment,
+    ), user)
+
+
+@app.get("/api/requests/{request_id}/history")
+async def request_history(request_id: int, user: Assignee = Depends(require(Perm.VIEW))) -> dict:
+    """История заявки: смены статуса и изменения (срок, приоритет, правка, категория, назначение)."""
+    org = app.state.org
+    async with app.state.db.session() as s:
+        req = await repo.get_request(s, org.org_id, request_id)
+        if req is None:
+            raise HTTPException(404, "Заявка не найдена")
+        events = await repo.request_events(s, request_id)
+        names = {a.max_id: a.name for a in await staff.list_specialists(s, org.org_id) if a.max_id}
+    status_titles = {"new": "Создана", "in_progress": "Взята в работу", "done": "Выполнена", "cancelled": "Отменена"}
+    items = [
+        {"at": e.changed_at, "text": status_titles.get(e.status, e.status),
+         # Кто менял статус: сотрудник по имени; заявителя руководству не называем
+         "who": names.get(e.changed_by) or (req.applicant_name if e.changed_by == req.applicant_max_id
+                                            and Perm.WORK in auth.perms_of(user) else None)}
+        for e in req.log
+    ] + [{"at": e.created_at, "text": e.text, "who": e.actor_name} for e in events]
+    items.sort(key=lambda x: x["at"])
+    return {"items": [{**i, "at": fmt_local(i["at"], org.timezone)} for i in items]}
+
+
+@app.post("/api/requests/{request_id}/contact")
+async def request_contact(request_id: int, user: Assignee = Depends(require(Perm.WORK))) -> dict:
+    """Прислать мне в MAX ссылку на профиль заявителя (в браузере max:// обычно не открывается)."""
+    try:
+        await actions.contact_applicant(ctx(), request_id, user)
+    except actions.ActionError as e:
+        raise HTTPException(409, str(e)) from e
+    return {"message": "Ссылка на профиль заявителя отправлена вам в MAX"}
+
+
+# --- категории (диспетчер и администратор) ---
+
+
+def category_row(c) -> dict:
+    return {
+        "code": c.code, "title": c.name, "sla_hours": c.sla_hours, "active": c.active,
+        "fallback": c.fallback, "keywords": json.loads(c.keywords or "[]"),
+    }
+
+
+class CategoryBody(BaseModel):
+    title: str = Field(min_length=2, max_length=128)
+    sla_hours: int = Field(ge=1, le=24 * 90)
+    keywords: list[str] = Field(default_factory=list, max_length=100)
+
+
+class CategoryPatch(BaseModel):
+    title: str | None = Field(None, min_length=2, max_length=128)
+    sla_hours: int | None = Field(None, ge=1, le=24 * 90)
+    keywords: list[str] | None = Field(None, max_length=100)
+    active: bool | None = None
+
+
+async def _categories_changed() -> None:
+    await categories.refresh(app.state.db, app.state.org, force=True)
+
+
+@app.get("/api/categories")
+async def categories_list(user: Assignee = Depends(require(Perm.MANAGE_CATEGORIES))) -> dict:
+    async with app.state.db.session() as s:
+        rows = await categories.load(s, app.state.org.org_id)
+        used = dict((await s.execute(
+            select(Req.category, func.count()).where(Req.org_id == app.state.org.org_id).group_by(Req.category)
+        )).all())
+    return {"items": [{**category_row(c), "requests": used.get(c.code, 0)} for c in rows]}
+
+
+async def _cat_run(coro_factory, user: Assignee, what: str):
+    async with app.state.db.session() as s, s.begin():
+        try:
+            result = await coro_factory(s)
+        except categories.CategoryError as e:
+            raise HTTPException(409, str(e)) from e
+    await _categories_changed()
+    log.info("Веб: категория %s (сотрудник %s)", what, user.id)
+    return result
+
+
+@app.post("/api/categories")
+async def categories_create(body: CategoryBody, user: Assignee = Depends(require(Perm.MANAGE_CATEGORIES))) -> dict:
+    row = await _cat_run(lambda s: categories.create(
+        s, app.state.org.org_id, title=body.title.strip(), sla_hours=body.sla_hours, keywords=body.keywords,
+    ), user, "создана")
+    return category_row(row)
+
+
+@app.patch("/api/categories/{code}")
+async def categories_update(
+    code: str, body: CategoryPatch, user: Assignee = Depends(require(Perm.MANAGE_CATEGORIES))
+) -> dict:
+    row = await _cat_run(lambda s: categories.update(
+        s, app.state.org.org_id, code, body.model_dump(exclude_none=True),
+    ), user, f"{code} изменена")
+    return category_row(row)
+
+
+@app.delete("/api/categories/{code}")
+async def categories_delete(code: str, user: Assignee = Depends(require(Perm.MANAGE_CATEGORIES))) -> dict:
+    return await _cat_run(lambda s: categories.delete(s, app.state.org.org_id, code), user, f"{code} удалена")
 
 
 # --- специалисты (только администратор) ---

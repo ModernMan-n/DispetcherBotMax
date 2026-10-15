@@ -4,10 +4,19 @@ from __future__ import annotations
 
 import re
 
-from sqlalchemy import select
+from sqlalchemy import case, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import ACTIVE_STATUSES, WORKING_ROLES, Assignee, AssigneeDirection, CardMessage, Request, Role
+from app.models import (
+    ACTIVE_STATUSES,
+    PRIORITY_RANK,
+    WORKING_ROLES,
+    Assignee,
+    AssigneeDirection,
+    CardMessage,
+    Request,
+    Role,
+)
 
 
 class StaffError(Exception):
@@ -119,7 +128,13 @@ async def list_active_requests(
     q = select(Request).where(Request.org_id == org_id, Request.status.in_(ACTIVE_STATUSES))
     if categories is not None:
         q = q.where(Request.category.in_(categories))
-    return list(await s.scalars(q.order_by(Request.created_at).limit(limit)))
+    return list(await s.scalars(q.order_by(*priority_order()).limit(limit)))
+
+
+def priority_order():
+    """Срочные первыми, дальше — у кого срок раньше."""
+    rank = case({p.value: r for p, r in PRIORITY_RANK.items()}, value=Request.priority, else_=2)
+    return rank, Request.due_at.is_(None), Request.due_at, Request.created_at
 
 
 async def on_duty_for_category(s: AsyncSession, org_id: str, category: str) -> list[Assignee]:

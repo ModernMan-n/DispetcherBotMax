@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 
 from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Index, String, Text, TypeDecorator
+from sqlalchemy import text as sa_text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -51,13 +52,25 @@ ACTIVE_STATUSES = (Status.NEW, Status.IN_PROGRESS)
 class Role(StrEnum):
     """Роль сотрудника в боте и веб-интерфейсе."""
 
-    ADMIN = "admin"  # заявки + управление специалистами
+    ADMIN = "admin"  # всё, включая управление сотрудниками
+    DISPATCHER = "dispatcher"  # заявки: назначение, правка, сроки, приоритет; категории
     SPECIALIST = "specialist"  # работает с заявками
     VIEWER = "viewer"  # руководство: только смотрит аналитику и заявки
 
 
 # Кто работает с заявками (получает их в личку, берёт, закрывает)
-WORKING_ROLES = (Role.ADMIN, Role.SPECIALIST)
+WORKING_ROLES = (Role.ADMIN, Role.DISPATCHER, Role.SPECIALIST)
+
+
+class Priority(StrEnum):
+    LOW = "low"
+    NORMAL = "normal"
+    HIGH = "high"
+    URGENT = "urgent"
+
+
+# Для сортировки: срочные — первыми
+PRIORITY_RANK = {Priority.URGENT: 0, Priority.HIGH: 1, Priority.NORMAL: 2, Priority.LOW: 3}
 
 
 class Base(DeclarativeBase):
@@ -72,6 +85,13 @@ class Category(Base):
     code: Mapped[str] = mapped_column(String(64))
     name: Mapped[str] = mapped_column(String(128))
     sla_hours: Mapped[int]
+    # Ключевые слова для автоопределения, JSON-список. NULL — ещё не заполнялись из конфига.
+    keywords: Mapped[str | None] = mapped_column(Text)
+    # «Прочее»: сюда попадает заявка, если ничего не подошло. Ровно одна на организацию.
+    fallback: Mapped[bool] = mapped_column(Boolean, default=False, server_default=sa_text("0"))
+    # Отключённую нельзя выбрать для новых заявок, но старые заявки её сохраняют
+    active: Mapped[bool] = mapped_column(Boolean, default=True, server_default=sa_text("1"))
+    sort_order: Mapped[int] = mapped_column(default=0, server_default=sa_text("0"))
 
     __table_args__ = (Index("ux_categories_org_code", "org_id", "code", unique=True),)
 
@@ -145,6 +165,11 @@ class Request(Base):
     assignee_id: Mapped[int | None] = mapped_column(ForeignKey("assignees.id"))
     taken_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
     closed_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    priority: Mapped[str] = mapped_column(String(16), default=Priority.NORMAL, server_default=Priority.NORMAL.value)
+    # Срок выполнения: по умолчанию — создание + норматив категории; диспетчер может перенести
+    due_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    # Срок задан вручную — тогда при смене категории не пересчитывается
+    due_manual: Mapped[bool] = mapped_column(Boolean, default=False, server_default=sa_text("0"))
 
     assignee: Mapped[Assignee | None] = relationship(lazy="selectin")
     log: Mapped[list[StatusLog]] = relationship(
@@ -156,6 +181,9 @@ class Request(Base):
         Index("ix_requests_org_applicant", "org_id", "applicant_max_id"),
         Index("ix_requests_org_created", "org_id", "created_at"),
     )
+
+    def is_overdue(self, now: datetime) -> bool:
+        return self.status in ACTIVE_STATUSES and self.due_at is not None and now > self.due_at
 
 
 class StatusLog(Base):
@@ -210,3 +238,17 @@ class WebSession(Base):
     expires_at: Mapped[datetime] = mapped_column(UTCDateTime)
 
     assignee: Mapped[Assignee] = relationship(lazy="selectin")
+
+
+class RequestEvent(Base):
+    """История изменений заявки, кроме статусов: срок, приоритет, правка полей, категория, назначение."""
+
+    __tablename__ = "request_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    request_id: Mapped[int] = mapped_column(ForeignKey("requests.id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+    kind: Mapped[str] = mapped_column(String(32))  # due | priority | edit | category | assign
+    text: Mapped[str] = mapped_column(Text)  # что изменилось, для людей
+    actor_id: Mapped[int | None] = mapped_column(ForeignKey("assignees.id"))
+    actor_name: Mapped[str | None] = mapped_column(String(128))

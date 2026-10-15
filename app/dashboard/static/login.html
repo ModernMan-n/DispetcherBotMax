@@ -35,7 +35,12 @@
         <input class="input" id="phone" type="tel" inputmode="tel" autocomplete="tel" placeholder="+7 900 123-45-67" required>
       </label>
       <button class="btn primary" type="submit">Получить код</button>
-      <p class="hint" style="margin-top:14px">Войти могут сотрудники, которых администратор добавил в список и которые один раз вошли в бота командой /staff.</p>
+      <div class="login-first" id="first-time">
+        <b>Входите впервые?</b> Сначала подтвердите номер в боте: откройте его и нажмите «Поделиться номером».
+        Это нужно один раз — дальше коды будут приходить сами.
+        <a class="btn soft" id="bot-link" href="#" target="_blank" rel="noopener" hidden>Открыть бота в MAX</a>
+        <div class="hint" id="bot-hint" style="margin-top:8px">В боте диспетчерской отправьте команду /staff.</div>
+      </div>
     </form>
 
     <form id="step-code" novalidate hidden>
@@ -51,6 +56,11 @@
         <button class="link-btn" type="button" id="back">Другой номер</button>
         · код действует 5 минут
       </p>
+      <div class="login-first" id="no-code">
+        <b>Код не пришёл?</b> Значит, номер ещё не подтверждён в боте или его нет в списке сотрудников.
+        Откройте бота, нажмите «Поделиться номером» и запросите код снова.
+        <a class="btn soft" id="bot-link-2" href="#" target="_blank" rel="noopener" hidden>Открыть бота в MAX</a>
+      </div>
     </form>
   </main>
 </div>
@@ -58,6 +68,13 @@
 <script>
 "use strict";
 const $ = id => document.getElementById(id);
+
+// Ссылка на бота для первого входа (имя бота сайт узнаёт у MAX)
+fetch("/api/public").then(r => r.json()).then(({ staff_link }) => {
+  if (!staff_link) return;
+  for (const id of ["bot-link", "bot-link-2"]) { $(id).href = staff_link; $(id).hidden = false; }
+  $("bot-hint").hidden = true;
+}).catch(() => {});
 
 $("theme-toggle").addEventListener("click", () => {
   const dark = document.documentElement.dataset.theme !== "dark";

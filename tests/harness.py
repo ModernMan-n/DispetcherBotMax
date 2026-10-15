@@ -116,6 +116,12 @@ class Harness:
             },
         })
 
+    async def start(self, payload: str | None = None, *, user=APPLICANT) -> None:
+        """Пользователь открыл бота (кнопка «Начать» или ссылка https://max.ru/<бот>?start=payload)."""
+        n = next(_seq)
+        await self._feed({"update_type": "bot_started", "timestamp": n, "chat_id": DIALOG_ID,
+                          "user": user, "payload": payload})
+
     async def chat_event(self, update_type: str, *, chat_id: int, user: dict) -> None:
         """user_added / user_removed в групповом чате."""
         n = next(_seq)

@@ -33,6 +33,9 @@ class FakeBot:
     async def edit_message(self, message_id, **kw):
         self.edits.append(message_id)
 
+    async def get_me(self):
+        return SimpleNamespace(username="dispatch_test_bot")
+
     async def get_chat_member(self, chat_id, user_id):
         return SimpleNamespace(user_id=user_id) if user_id in self.staff_members else None
 

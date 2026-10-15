@@ -8,12 +8,12 @@ from __future__ import annotations
 
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import event, inspect, select
+from sqlalchemy import event, inspect
 from sqlalchemy.engine import Connection, make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
+from app import categories
 from app.config import ROOT, OrgConfig
-from app.models import Category
 
 
 def resolve_url(url: str) -> str:
@@ -61,19 +61,13 @@ class Database:
         async with self.engine.begin() as conn:
             await conn.run_sync(_upgrade)
 
-    async def sync_categories(self, org: OrgConfig) -> None:
-        """Справочник категорий в БД повторяет конфиг (нужен дашборду и для ручной правки)."""
+    async def prepare_data(self, org: OrgConfig) -> None:
+        """Категории: первый раз — из конфига, дальше источник правды — БД. Сроки старым заявкам."""
         async with self.session() as s, s.begin():
-            existing = {
-                c.code: c
-                for c in await s.scalars(select(Category).where(Category.org_id == org.org_id))
-            }
-            for c in org.categories:
-                row = existing.get(c.code)
-                if row is None:
-                    s.add(Category(org_id=org.org_id, code=c.code, name=c.title, sla_hours=c.sla_hours))
-                else:
-                    row.name, row.sla_hours = c.title, c.sla_hours
+            await categories.seed_from_config(s, org)
+        await categories.refresh(self, org, force=True)
+        async with self.session() as s, s.begin():
+            await categories.backfill_due_dates(s, org)
 
     async def close(self) -> None:
         await self.engine.dispose()
@@ -89,5 +83,5 @@ def _sqlite_pragmas(dbapi_conn, _record) -> None:
 async def open_db(url: str, org: OrgConfig) -> Database:
     db = Database(url)
     await db.migrate()
-    await db.sync_categories(org)
+    await db.prepare_data(org)
     return db

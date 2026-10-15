@@ -27,7 +27,7 @@ from app.config import OrgConfig
 from app.db import Database
 from app.formatting import format_duration
 from app.membership import MembershipChecker
-from app.models import ACTIVE_STATUSES, TRANSITIONS, Request, Status
+from app.models import ACTIVE_STATUSES, TRANSITIONS, Priority, Request, Status, utcnow
 
 log = logging.getLogger(__name__)
 
@@ -36,6 +36,11 @@ STATUS_LINE = {
     Status.IN_PROGRESS: "🔧 В работе",
     Status.DONE: "✅ Выполнена",
     Status.CANCELLED: "✖️ Отменена",
+}
+
+PRIORITY_MARKERS = {Priority.URGENT: "🔴 ", Priority.HIGH: "🟠 ", Priority.LOW: ""}
+PRIORITY_LABELS = {
+    Priority.URGENT: "🔴 срочный", Priority.HIGH: "🟠 высокий", Priority.NORMAL: "обычный", Priority.LOW: "низкий",
 }
 
 NOTIFY_TEXT_KEY = {
@@ -94,14 +99,20 @@ def render_card(org: OrgConfig, req: Request) -> str:
         return dt.astimezone(tz).strftime("%H:%M %d.%m")
 
     status = Status(req.status)
+    marker = PRIORITY_MARKERS.get(Priority(req.priority), "")
     lines = [
-        f"<b>Заявка №{req.id}</b> · {esc(org.category_titles.get(req.category, req.category))}",
+        f"{marker}<b>Заявка №{req.id}</b> · {esc(org.category_titles.get(req.category, req.category))}",
         f"{esc(org.building_titles.get(req.building, req.building))}, каб. {esc(req.room)}",
         esc(req.description),
         f"От: {profile_link(req.applicant_name, req.applicant_max_id)}",
         f"Создана: {local(req.created_at)}",
-        "",
     ]
+    if Priority(req.priority) != Priority.NORMAL:
+        lines.append(f"Приоритет: {PRIORITY_LABELS[Priority(req.priority)]}")
+    if status in ACTIVE_STATUSES and req.due_at is not None:
+        overdue = " — <b>просрочена</b>" if req.is_overdue(utcnow()) else ""
+        lines.append(f"Срок: до {local(req.due_at)}{overdue}")
+    lines.append("")
     status_line = STATUS_LINE[status]
     if status == Status.IN_PROGRESS and req.assignee:
         status_line += f" — {esc(req.assignee.name)}, с {local(req.taken_at)}"
@@ -142,7 +153,7 @@ def cancel_confirm_keyboard(req: Request) -> list:
 
 def category_keyboard(org: OrgConfig, req: Request) -> list:
     kb = InlineKeyboardBuilder()
-    for c in org.categories:
+    for c in org.active_categories:
         mark = "• " if c.code == req.category else ""
         kb.add(CallbackButton(text=mark + c.title, payload=CardCategory(id=req.id, code=c.code).pack()))
     kb.adjust(2)
@@ -153,7 +164,7 @@ def category_keyboard(org: OrgConfig, req: Request) -> list:
 # --- рассылка и синхронизация карточек ---
 
 
-async def _send_card(bot: Bot, db: Database, org: OrgConfig, req: Request, *, chat_id=None, user_id=None) -> None:
+async def send_card(bot: Bot, db: Database, org: OrgConfig, req: Request, *, chat_id=None, user_id=None) -> None:
     try:
         sent = await bot.send_message(
             chat_id=chat_id, user_id=user_id, text=render_card(org, req), attachments=card_keyboard(req),
@@ -181,7 +192,7 @@ async def send_to_specialists(
         if not await members.is_member(bot, a.max_id):
             log.info("Специалист %s не в чате сотрудников — карточку №%s не отправляем", a.id, req.id)
             continue
-        await _send_card(bot, db, org, req, user_id=a.max_id)
+        await send_card(bot, db, org, req, user_id=a.max_id)
 
 
 async def post_new_request(
@@ -189,7 +200,7 @@ async def post_new_request(
 ) -> None:
     """Новая заявка: в чат диспетчерской и специалистам направления. Ошибки не мешают заявителю."""
     if org.dispatcher_chat_id is not None:
-        await _send_card(bot, db, org, req, chat_id=org.dispatcher_chat_id)
+        await send_card(bot, db, org, req, chat_id=org.dispatcher_chat_id)
     await send_to_specialists(bot, db, org, req, members)
 
 
@@ -317,7 +328,7 @@ def build_dispatch_router(org: OrgConfig, db: Database, members: MembershipCheck
             await event.ack(notification="Заявка не найдена")
             return
         await event.ack(notification=f"Заявка №{req.id}")
-        await _send_card(event.bot, db, org, req, user_id=event.callback.user.user_id)
+        await send_card(event.bot, db, org, req, user_id=event.callback.user.user_id)
 
     @router.message_callback(Card.filter(F.act == "cancel"), access)
     async def on_cancel(event: MessageCallback, payload: Card):
@@ -333,16 +344,26 @@ def build_dispatch_router(org: OrgConfig, db: Database, members: MembershipCheck
 
     @router.message_callback(CardCategory.filter(), access)
     async def on_category_set(event: MessageCallback, payload: CardCategory):
-        if payload.code not in org.category_titles:
+        if payload.code not in {c.code for c in org.active_categories}:
             await event.ack(notification="Нет такой категории")
             return
+        user = event.callback.user
         async with db.session() as s, s.begin():
             req = await repo.get_request(s, org.org_id, payload.id)
             if req is None:
                 await event.ack(notification="Заявка не найдена")
                 return
-            changed = req.category != payload.code
-            await repo.set_category(s, req, payload.code)
+            old = req.category
+            changed = old != payload.code
+            if changed:
+                await repo.set_category(s, req, payload.code, org.category_sla.get(payload.code))
+                actor = await staff.get_staff_member(s, org.org_id, user.user_id)
+                await repo.log_event(
+                    s, req, "category",
+                    f"Категория: {org.category_titles.get(old, old)} → {org.category_titles[payload.code]}",
+                    actor_id=actor.id if actor else None,
+                    actor_name=actor.name if actor else " ".join(p for p in (user.first_name, user.last_name) if p),
+                )
         await event.edit(text=render_card(org, req), attachments=card_keyboard(req), format=CARD_FORMAT)
         await sync_cards(event.bot, db, org, req, skip_mid=_pressed_mid(event))
         if changed and Status(req.status) == Status.NEW:

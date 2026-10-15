@@ -24,6 +24,7 @@ class Category(BaseModel):
     sla_hours: int
     keywords: list[str] = []
     fallback: bool = False
+    active: bool = True
 
 
 class OrgConfig(BaseModel):
@@ -55,11 +56,21 @@ class OrgConfig(BaseModel):
     def building_titles(self) -> dict[str, str]:
         return {b.code: b.title for b in self.buildings}
 
-    @cached_property
+    # Категории меняет диспетчер во время работы (app/categories.py обновляет self.categories),
+    # поэтому всё про категории вычисляется на лету, без кэша.
+    @property
     def category_titles(self) -> dict[str, str]:
         return {c.code: c.title for c in self.categories}
 
-    @cached_property
+    @property
+    def active_categories(self) -> list[Category]:
+        return [c for c in self.categories if c.active]
+
+    @property
+    def category_sla(self) -> dict[str, int]:
+        return {c.code: c.sla_hours for c in self.categories}
+
+    @property
     def fallback_category(self) -> Category:
         return next(c for c in self.categories if c.fallback)
 

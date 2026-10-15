@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 
 def format_duration(delta: timedelta) -> str:
@@ -16,3 +17,8 @@ def format_duration(delta: timedelta) -> str:
     if (mins and not days) or not parts:
         parts.append(f"{mins} мин")
     return " ".join(parts)
+
+
+def fmt_local(dt: datetime | None, tz: str) -> str:
+    """«15.10 18:00» в часовом поясе организации."""
+    return "—" if dt is None else dt.astimezone(ZoneInfo(tz)).strftime("%d.%m %H:%M")

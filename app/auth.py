@@ -27,17 +27,24 @@ SESSION_TTL = timedelta(days=7)
 class Perm(StrEnum):
     VIEW = "view"  # аналитика и список заявок
     WORK = "work"  # взять, закрыть, вернуть, отменить, сменить категорию
-    ADMIN_REQUESTS = "admin_requests"  # назначить исполнителя, править поля заявки
-    MANAGE_STAFF = "manage_staff"  # специалисты: добавить, изменить, удалить
+    ADMIN_REQUESTS = "admin_requests"  # назначить, править заявку, срок, приоритет
+    MANAGE_CATEGORIES = "manage_categories"  # категории: добавить, изменить, отключить
+    MANAGE_STAFF = "manage_staff"  # сотрудники: добавить, изменить, удалить
 
 
 ROLE_PERMS: dict[Role, frozenset[Perm]] = {
     Role.VIEWER: frozenset({Perm.VIEW}),
     Role.SPECIALIST: frozenset({Perm.VIEW, Perm.WORK}),
+    Role.DISPATCHER: frozenset({Perm.VIEW, Perm.WORK, Perm.ADMIN_REQUESTS, Perm.MANAGE_CATEGORIES}),
     Role.ADMIN: frozenset(Perm),
 }
 
-ROLE_TITLES = {Role.ADMIN: "Администратор", Role.SPECIALIST: "Специалист", Role.VIEWER: "Руководство"}
+ROLE_TITLES = {
+    Role.ADMIN: "Администратор",
+    Role.DISPATCHER: "Диспетчер",
+    Role.SPECIALIST: "Специалист",
+    Role.VIEWER: "Руководство",
+}
 
 
 def perms_of(a: Assignee) -> frozenset[Perm]:

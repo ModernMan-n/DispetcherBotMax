@@ -8,7 +8,7 @@ from maxapi import F, Router
 from maxapi.context import BaseContext
 from maxapi.filters.command import Command
 from maxapi.filters.contact import Contact
-from maxapi.types import MessageCallback, MessageCreated
+from maxapi.types import BotStarted, MessageCallback, MessageCreated
 from maxapi.types.attachments.contact import Contact as ContactAttachment
 
 from app import staff
@@ -18,9 +18,13 @@ from app.bot.ui import StaffAction
 from app.config import OrgConfig
 from app.db import Database
 from app.formatting import format_duration
-from app.models import Assignee, Request, Status, utcnow
+from app.bot.dispatch import PRIORITY_MARKERS
+from app.models import Assignee, Priority, Request, Status, utcnow
 
 log = logging.getLogger(__name__)
+
+# Параметр ссылки-приглашения для сотрудников: https://max.ru/<бот>?start=staff
+STAFF_START_PAYLOAD = "staff"
 
 STATUS_SHORT = {Status.NEW: "новая", Status.IN_PROGRESS: "в работе"}
 
@@ -42,9 +46,11 @@ def request_list_text(org: OrgConfig, title: str, items: list[Request]) -> str:
     lines = [f"{title} ({len(items)}):"]
     for r in items:
         place = f"{org.building_titles.get(r.building, r.building)}, каб. {r.room}"
+        marker = PRIORITY_MARKERS.get(Priority(r.priority), "")
+        overdue = " · ⚠️ просрочена" if r.is_overdue(now) else ""
         lines.append(
-            f"№{r.id} · {org.category_titles.get(r.category, r.category)} · {place} · "
-            f"{STATUS_SHORT[Status(r.status)]} · {format_duration(now - r.created_at)}"
+            f"{marker}№{r.id} · {org.category_titles.get(r.category, r.category)} · {place} · "
+            f"{STATUS_SHORT[Status(r.status)]} · {format_duration(now - r.created_at)}{overdue}"
         )
     lines.append("\nНажмите номер, чтобы открыть заявку.")
     return "\n".join(lines)
@@ -65,22 +71,37 @@ def build_staff_router(org: OrgConfig, db: Database) -> Router:
             return
         await answer(text=status_text(org, a), attachments=[ui.main_menu(a)])
 
-    @router.message_created(Command(["staff", "sotrudnik"]))
-    async def on_staff_command(event: MessageCreated, context: BaseContext):
+    async def staff_entry(user_id: int, answer, context: BaseContext) -> None:
+        """Вход сотрудника: уже привязан — показываем меню, нет — просим поделиться номером."""
         await context.clear()
         async with db.session() as s:
-            a = await staff.get_staff_member(s, org.org_id, event.message.sender.user_id)
+            a = await staff.get_staff_member(s, org.org_id, user_id)
         if a is not None:
-            await show_status(event.message.answer, a)
+            await show_status(answer, a)
             return
-        await event.message.answer(
+        await answer(
             text=(
-                "Вход для специалистов.\n"
+                "Вход для сотрудников.\n"
                 "Нажмите «Поделиться номером» — бот проверит, что вы есть в списке сотрудников. "
                 "Номер нужен только для этого и обычным пользователям не запрашивается."
             ),
             attachments=[ui.share_contact_keyboard()],
         )
+
+    @router.message_created(Command(["staff", "sotrudnik"]))
+    async def on_staff_command(event: MessageCreated, context: BaseContext):
+        await staff_entry(event.message.sender.user_id, event.message.answer, context)
+
+    # Приглашение по ссылке https://max.ru/<бот>?start=staff (с сайта и из раздела «Сотрудники»)
+    @router.bot_started(F.payload == STAFF_START_PAYLOAD)
+    async def on_staff_link(event: BotStarted, context: BaseContext):
+        async def answer(**kw):
+            await event.bot.send_message(chat_id=event.chat_id, **kw)
+        await staff_entry(event.user.user_id, answer, context)
+
+    @router.message_created(F.message.body.text.regexp(rf"^/start\s+{STAFF_START_PAYLOAD}\b"))
+    async def on_staff_start_text(event: MessageCreated, context: BaseContext):
+        await staff_entry(event.message.sender.user_id, event.message.answer, context)
 
     @router.message_created(Contact())
     async def on_contact(event: MessageCreated, context: BaseContext, contact: ContactAttachment):
