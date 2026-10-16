@@ -272,3 +272,19 @@ class RequestAssignee(Base):
     request_id: Mapped[int] = mapped_column(ForeignKey("requests.id", ondelete="CASCADE"), primary_key=True)
     assignee_id: Mapped[int] = mapped_column(ForeignKey("assignees.id"), primary_key=True, index=True)
     added_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+
+
+class BuildingRow(Base):
+    """Корпус организации. Управляет диспетчер; config/org.yaml — только начальный список."""
+
+    __tablename__ = "buildings"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    org_id: Mapped[str] = mapped_column(String(64), index=True)
+    code: Mapped[str] = mapped_column(String(64))
+    title: Mapped[str] = mapped_column(String(128))
+    # Отключённый не показывается в боте, но старые заявки сохраняют его название
+    active: Mapped[bool] = mapped_column(Boolean, default=True, server_default=sa_text("1"))
+    sort_order: Mapped[int] = mapped_column(default=0, server_default=sa_text("0"))
+
+    __table_args__ = (Index("ux_buildings_org_code", "org_id", "code", unique=True),)

@@ -31,6 +31,7 @@ class Perm(StrEnum):
     WORK = "work"  # взять, закрыть, вернуть, отменить, сменить категорию
     ADMIN_REQUESTS = "admin_requests"  # назначить, править заявку, срок, приоритет
     MANAGE_CATEGORIES = "manage_categories"  # категории: добавить, изменить, отключить
+    MANAGE_BUILDINGS = "manage_buildings"  # корпуса: добавить, переименовать, порядок, отключить
     MANAGE_STAFF = "manage_staff"  # сотрудники: добавить, изменить, удалить
 
 
@@ -40,6 +41,7 @@ ROLE_PERMS: dict[Role, frozenset[Perm]] = {
     Role.SPECIALIST: frozenset({Perm.VIEW, Perm.WORK}),
     Role.DISPATCHER: frozenset({
         Perm.VIEW, Perm.ANALYTICS, Perm.VIEW_ALL, Perm.WORK, Perm.ADMIN_REQUESTS, Perm.MANAGE_CATEGORIES,
+        Perm.MANAGE_BUILDINGS,
     }),
     Role.ADMIN: frozenset(Perm),
 }

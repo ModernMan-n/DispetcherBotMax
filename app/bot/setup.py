@@ -10,7 +10,7 @@ from app.bot.dispatch import build_dispatch_router
 from app.bot.gate import build_gate_router
 from app.bot.handlers import build_router
 from app.bot.staff_menu import build_staff_router
-from app import categories
+from app import buildings, categories
 from app.config import OrgConfig
 from app.db import Database
 from app.membership import MembershipChecker
@@ -24,6 +24,7 @@ class RefreshCategories(BaseMiddleware):
 
     async def __call__(self, handler, event_object, data):
         await categories.refresh(self.db, self.org)
+        await buildings.refresh(self.db, self.org)
         return await handler(event_object, data)
 
 

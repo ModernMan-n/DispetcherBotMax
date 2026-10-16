@@ -74,7 +74,7 @@ def request_list_keyboard(request_ids: list[int]):
 
 def buildings_keyboard(org: OrgConfig):
     kb = InlineKeyboardBuilder()
-    for b in org.buildings:
+    for b in org.active_buildings:
         kb.add(CallbackButton(text=b.title, payload=BuildingChoice(code=b.code).pack()))
     kb.adjust(2)
     kb.row(cancel_button())

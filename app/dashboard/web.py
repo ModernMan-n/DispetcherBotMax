@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select, true
 from sqlalchemy.engine import make_url
 
-from app import actions, auth, categories, repo, staff, stats
+from app import actions, auth, buildings, categories, repo, staff, stats
 from app.auth import Perm
 from app.config import load_settings
 from app.db import open_db
@@ -107,6 +107,7 @@ def _demo_viewer() -> Assignee:
 
 async def current_user(request: Request) -> Assignee:
     await categories.refresh(app.state.db, app.state.org)
+    await buildings.refresh(app.state.db, app.state.org)
     if app.state.demo:
         return _demo_viewer()
     token = request.cookies.get(COOKIE)
@@ -291,7 +292,7 @@ async def meta(user: Assignee = Depends(require(Perm.VIEW))) -> dict:
             ]
     return {
         "staff_link": await staff_invite_link(),
-        "buildings": [{"code": b.code, "title": b.title} for b in org.buildings],
+        "buildings": [{"code": b.code, "title": b.title, "active": b.active} for b in org.buildings],
         "categories": [{"code": c.code, "title": c.title, "active": c.active} for c in org.categories],
         "priorities": [{"code": p.value, "title": actions.PRIORITY_TITLES[p]} for p in
                        (Priority.URGENT, Priority.HIGH, Priority.NORMAL, Priority.LOW)],
@@ -565,6 +566,71 @@ async def categories_update(
 @app.delete("/api/categories/{code}")
 async def categories_delete(code: str, user: Assignee = Depends(require(Perm.MANAGE_CATEGORIES))) -> dict:
     return await _cat_run(lambda s: categories.delete(s, app.state.org.org_id, code), user, f"{code} удалена")
+
+
+# --- корпуса (диспетчер и администратор) ---
+
+
+class BuildingBody(BaseModel):
+    title: str = Field(min_length=2, max_length=40)
+
+
+class BuildingPatch(BaseModel):
+    title: str | None = Field(None, min_length=2, max_length=40)
+    active: bool | None = None
+    move: int | None = Field(None, ge=-1, le=1)  # -1 — выше в списке бота, +1 — ниже
+
+
+def building_row(b, used: int = 0) -> dict:
+    return {"code": b.code, "title": b.title, "active": b.active, "requests": used}
+
+
+async def _bld_run(fn, user: Assignee, what: str):
+    async with app.state.db.session() as s, s.begin():
+        try:
+            result = await fn(s)
+        except buildings.BuildingError as e:
+            raise HTTPException(409, str(e)) from e
+    await buildings.refresh(app.state.db, app.state.org, force=True)
+    log.info("Веб: корпус %s (сотрудник %s)", what, user.id)
+    return result
+
+
+@app.get("/api/buildings")
+async def buildings_list(user: Assignee = Depends(require(Perm.MANAGE_BUILDINGS))) -> dict:
+    org_id = app.state.org.org_id
+    async with app.state.db.session() as s:
+        rows = await buildings.load(s, org_id)
+        used = dict((await s.execute(
+            select(Req.building, func.count()).where(Req.org_id == org_id).group_by(Req.building)
+        )).all())
+    return {"items": [building_row(b, used.get(b.code, 0)) for b in rows]}
+
+
+@app.post("/api/buildings")
+async def buildings_create(body: BuildingBody, user: Assignee = Depends(require(Perm.MANAGE_BUILDINGS))) -> dict:
+    row = await _bld_run(lambda s: buildings.create(s, app.state.org.org_id, title=body.title), user, "добавлен")
+    return building_row(row)
+
+
+@app.patch("/api/buildings/{code}")
+async def buildings_update(
+    code: str, body: BuildingPatch, user: Assignee = Depends(require(Perm.MANAGE_BUILDINGS))
+) -> dict:
+    org_id = app.state.org.org_id
+
+    async def apply(s):
+        if body.move:
+            await buildings.move(s, org_id, code, body.move)
+        return await buildings.update(s, org_id, code, body.model_dump(exclude_none=True, exclude={"move"}))
+
+    row = await _bld_run(apply, user, f"{code} изменён")
+    return building_row(row)
+
+
+@app.delete("/api/buildings/{code}")
+async def buildings_delete(code: str, user: Assignee = Depends(require(Perm.MANAGE_BUILDINGS))) -> dict:
+    return await _bld_run(lambda s: buildings.delete(s, app.state.org.org_id, code), user, f"{code} удалён")
 
 
 # --- специалисты (только администратор) ---

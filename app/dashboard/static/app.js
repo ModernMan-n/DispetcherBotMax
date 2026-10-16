@@ -399,7 +399,8 @@ function openRequest(r) {
         run(post("assign", { assignee_ids: ids }), ids.length > 1 ? "Исполнители назначены" : "Исполнитель назначен");
       } }, "Сохранить исполнителей"));
 
-    const building = selectInput("building", state.meta.buildings.map(b => [b.code, b.title]), r.building);
+    const building = selectInput("building", state.meta.buildings.filter(b => b.active || b.code === r.building)
+      .map(b => [b.code, b.title]), r.building);
     const room = el("input", { class: "input", name: "room", value: r.room, maxlength: 20 });
     const desc = el("textarea", { class: "input", name: "description", maxlength: 1000 });
     desc.value = r.description;
@@ -635,12 +636,103 @@ async function deleteCategory() {
   }
 }
 
+// ================= Корпуса =================
+
+let buildingsCache = [];
+let editingBld = null;
+
+async function loadBuildings() {
+  try {
+    buildingsCache = (await api("/api/buildings")).items;
+    renderBuildings();
+    showError("");
+  } catch (e) {
+    showError(`Не удалось загрузить корпуса: ${e.message}`);
+  }
+}
+
+async function moveBuilding(b, move) {
+  try {
+    await api(`/api/buildings/${b.code}`, { method: "PATCH", body: { move } });
+    await Promise.all([loadBuildings(), loadMeta()]);
+  } catch (err) {
+    toast(err.message);
+  }
+}
+
+function renderBuildings() {
+  const last = buildingsCache.length - 1;
+  $("buildings").replaceChildren(table(
+    [["Корпус"], ["Заявок", "num"], ["Статус"], ["Порядок в боте", "num"]],
+    buildingsCache.map((b, i) => el("tr", {
+      class: "clickable", tabindex: 0,
+      onclick: () => openBuilding(b),
+      onkeydown: e => { if (e.key === "Enter" && e.target === e.currentTarget) openBuilding(b); },
+    },
+      el("td", { class: "strong" }, b.title),
+      el("td", { class: "num" }, b.requests),
+      el("td", {}, b.active ? el("span", { class: "badge good" }, "активен") : el("span", { class: "badge flat" }, "отключён")),
+      el("td", { class: "num" },
+        el("button", { class: "btn sm ghost", type: "button", disabled: i === 0, "aria-label": `Выше: ${b.title}`,
+          onclick: e => { e.stopPropagation(); moveBuilding(b, -1); } }, "↑"),
+        el("button", { class: "btn sm ghost", type: "button", disabled: i === last, "aria-label": `Ниже: ${b.title}`,
+          onclick: e => { e.stopPropagation(); moveBuilding(b, 1); } }, "↓"),
+      ),
+    )),
+  ));
+}
+
+function openBuilding(b) {
+  editingBld = b;
+  const form = $("bld-form");
+  form.reset();
+  $("bld-error").hidden = true;
+  $("bld-title").textContent = b ? b.title : "Новый корпус";
+  form.title.value = b ? b.title : "";
+  form.active.checked = b ? b.active : true;
+  $("bld-active-field").hidden = !b;
+  $("bld-delete").hidden = !b;
+  $("bld-dialog").showModal();
+  form.title.focus();
+}
+
+async function saveBuilding(e) {
+  e.preventDefault();
+  const form = $("bld-form");
+  const payload = { title: form.title.value.trim() };
+  if (editingBld) payload.active = form.active.checked;
+  try {
+    if (editingBld) await api(`/api/buildings/${editingBld.code}`, { method: "PATCH", body: payload });
+    else await api("/api/buildings", { method: "POST", body: payload });
+    $("bld-dialog").close();
+    toast(editingBld ? "Корпус сохранён" : "Корпус добавлен");
+    await Promise.all([loadBuildings(), loadMeta()]);
+  } catch (err) {
+    $("bld-error").textContent = err.message;
+    $("bld-error").hidden = false;
+  }
+}
+
+async function deleteBuilding() {
+  if (!editingBld || !confirm(`Удалить корпус «${editingBld.title}»?`)) return;
+  try {
+    const res = await api(`/api/buildings/${editingBld.code}`, { method: "DELETE" });
+    $("bld-dialog").close();
+    toast(res.archived ? "В корпусе есть заявки — он отключён, история сохранена" : "Корпус удалён");
+    await Promise.all([loadBuildings(), loadMeta()]);
+  } catch (err) {
+    $("bld-error").textContent = err.message;
+    $("bld-error").hidden = false;
+  }
+}
+
 // ================= Навигация и запуск =================
 
 const PAGES = {
   overview: { title: "Обзор", load: loadOverview, perm: "analytics" },
   requests: { title: "Заявки", load: loadRequests },
   categories: { title: "Категории", load: loadCategories, perm: "manage_categories" },
+  buildings: { title: "Корпуса", load: loadBuildings, perm: "manage_buildings" },
   staff: { title: "Сотрудники", load: loadStaff, perm: "manage_staff" },
 };
 
@@ -710,6 +802,9 @@ $("staff-add").addEventListener("click", () => openStaff(null));
 $("cat-add").addEventListener("click", () => openCategory(null));
 $("cat-form").addEventListener("submit", saveCategory);
 $("cat-delete").addEventListener("click", deleteCategory);
+$("bld-add").addEventListener("click", () => openBuilding(null));
+$("bld-form").addEventListener("submit", saveBuilding);
+$("bld-delete").addEventListener("click", deleteBuilding);
 $("staff-form").addEventListener("submit", saveStaff);
 $("staff-form").role.addEventListener("change", syncRoleFields);
 $("staff-delete").addEventListener("click", deleteStaff);

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-from functools import cached_property
 from pathlib import Path
 
 import yaml
@@ -16,6 +15,7 @@ ROOT = Path(__file__).resolve().parent.parent
 class Building(BaseModel):
     code: str
     title: str
+    active: bool = True
 
 
 class Category(BaseModel):
@@ -52,9 +52,14 @@ class OrgConfig(BaseModel):
                 raise ValueError(f"Повторяющиеся code в {field}")
         return self
 
-    @cached_property
+    # Корпуса, как и категории, меняет диспетчер во время работы (app/buildings.py) — без кэша
+    @property
     def building_titles(self) -> dict[str, str]:
         return {b.code: b.title for b in self.buildings}
+
+    @property
+    def active_buildings(self) -> list[Building]:
+        return [b for b in self.buildings if b.active]
 
     # Категории меняет диспетчер во время работы (app/categories.py обновляет self.categories),
     # поэтому всё про категории вычисляется на лету, без кэша.

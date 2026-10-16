@@ -274,7 +274,7 @@ async def edit_request(ctx: Ctx, request_id: int, fields: dict, actor: Assignee)
         req = await _load(s, ctx, request_id)
         changes = []
         if "building" in fields and fields["building"] != req.building:
-            if fields["building"] not in org.building_titles:
+            if fields["building"] not in {b.code for b in org.active_buildings}:
                 raise ActionError("Нет такого корпуса")
             changes.append(f"корпус: {org.building_titles.get(req.building, req.building)} → "
                            f"{org.building_titles[fields['building']]}")

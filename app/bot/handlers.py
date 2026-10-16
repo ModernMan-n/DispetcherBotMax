@@ -158,7 +158,7 @@ def build_router(
 
     @router.message_callback(BuildingChoice.filter(), NewRequest.building)
     async def on_building(event: MessageCallback, context: BaseContext, payload: BuildingChoice):
-        title = org.building_titles.get(payload.code)
+        title = {b.code: b.title for b in org.active_buildings}.get(payload.code)
         if title is None:
             await event.ack(notification="Такого корпуса нет, выберите из списка")
             return

@@ -12,7 +12,7 @@ from sqlalchemy import event, inspect
 from sqlalchemy.engine import Connection, make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
-from app import categories
+from app import buildings, categories
 from app.config import ROOT, OrgConfig
 
 
@@ -62,10 +62,12 @@ class Database:
             await conn.run_sync(_upgrade)
 
     async def prepare_data(self, org: OrgConfig) -> None:
-        """Категории: первый раз — из конфига, дальше источник правды — БД. Сроки старым заявкам."""
+        """Категории и корпуса: первый раз — из конфига, дальше источник правды — БД. Сроки старым заявкам."""
         async with self.session() as s, s.begin():
             await categories.seed_from_config(s, org)
+            await buildings.seed_from_config(s, org)
         await categories.refresh(self, org, force=True)
+        await buildings.refresh(self, org, force=True)
         async with self.session() as s, s.begin():
             await categories.backfill_due_dates(s, org)
 
